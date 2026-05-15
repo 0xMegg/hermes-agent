@@ -3186,12 +3186,8 @@ class DiscordAdapter(BasePlatformAdapter):
             discord.app_commands.Choice(name="honbabseoul", value="honbabseoul"),
             discord.app_commands.Choice(name="nexus", value="nexus"),
             discord.app_commands.Choice(name="bestst", value="bestst"),
-            discord.app_commands.Choice(name="hermes-core", value="hermes-core"),
-            discord.app_commands.Choice(name="hermes-agent", value="hermes-agent"),
-            discord.app_commands.Choice(name="discord-gateway", value="discord-gateway"),
-            discord.app_commands.Choice(name="kamill-forge", value="kamill-forge"),
             discord.app_commands.Choice(name="kamill-ops", value="kamill-ops"),
-            discord.app_commands.Choice(name="kamill-memory-skills", value="kamill-memory-skills"),
+            discord.app_commands.Choice(name="kamill-forge", value="kamill-forge"),
         ])
         async def slash_thread(
             interaction: discord.Interaction,
@@ -3715,36 +3711,6 @@ Use this repo as cwd for repo-specific inspection, tests, and implementation.
 Do not print secrets, env contents, auth tokens, or API keys.
 Reply to me in Korean.""",
         },
-        "hermes-core": {
-            "name": "hermes-core",
-            "starter": """This thread is for hermes-core.
-Repo path: /Users/qnb/dev/templates/hermes-core
-
-Treat this as Hermes operating-layer template work, not product work.
-Do not change policy/workflow artifacts without explicit scoped approval.
-Do not print secrets, env contents, auth tokens, or API keys.
-Reply to me in Korean.""",
-        },
-        "hermes-agent": {
-            "name": "hermes-agent",
-            "starter": """This thread is for Hermes Agent runtime development.
-Repo path: /Users/qnb/.hermes/hermes-agent
-
-Treat this as live Kamill/Hermes runtime work.
-Inspect repo instructions before editing, keep changes scoped, and close out with working tree, sync, verification, and runtime status.
-Do not print secrets, .env contents, auth tokens, or API keys.
-Reply to me in Korean.""",
-        },
-        "discord-gateway": {
-            "name": "discord-gateway",
-            "starter": """This thread is for Hermes Discord Gateway work.
-Repo path: /Users/qnb/.hermes/hermes-agent
-
-Scope work to gateway/Discord behavior unless I explicitly approve broader Hermes changes.
-Do not print Discord tokens, .env contents, auth tokens, or API keys.
-Before restarting the gateway, explain why; after restarting, verify gateway status and Discord connectivity.
-Reply to me in Korean.""",
-        },
         "kamill-forge": {
             "name": "kamill-forge",
             "starter": """This thread is for Kamill Forge: improving Kamill's operating knowledge and self-improvement workflow.
@@ -3760,18 +3726,9 @@ Reply to me in Korean.""",
             "starter": """This thread is for Kamill/Hermes operations.
 
 No repo is anchored by default.
-Use this for gateway health, auth recovery, model/provider checks, Discord workflow, and operational troubleshooting.
+Use this for Kamill runtime operations: gateway health, Hermes Agent runtime work, auth recovery, model/provider checks, Discord workflow, thread presets, and operational troubleshooting.
+Project/product work belongs in the appropriate project thread; Kamill self-improvement, memory/skills hygiene, and operating-knowledge refinement belong in kamill-forge.
 Do not mutate config, auth, gateway service state, memory, skills, or repos without explicit approval.
-Do not print secrets, .env contents, auth tokens, or API keys.
-Reply to me in Korean.""",
-        },
-        "kamill-memory-skills": {
-            "name": "kamill-memory-skills",
-            "starter": """This thread is for Kamill memory, skills, and session recall hygiene.
-
-No repo is anchored by default.
-Distinguish durable user/environment memory from reusable procedural skills and temporary session progress.
-Do not add, remove, or patch memory/skills without explaining the proposed entry/change and getting explicit approval when the change is nontrivial.
 Do not print secrets, .env contents, auth tokens, or API keys.
 Reply to me in Korean.""",
         },

@@ -96,11 +96,11 @@ class TestPresetThreadNaming:
     async def test_initial_message_supplies_suffix_when_task_is_empty(self):
         name, _starter = DiscordAdapter._build_preset_thread(
             object.__new__(DiscordAdapter),
-            "hermes-core",
+            "kamill-ops",
             message="Improve Discord thread names from the first request and target metadata.",
         )
 
-        assert name == "hermes-core · Improve Discord thread names from the first request"
+        assert name == "kamill-ops · Improve Discord thread names from the first request"
         assert len(name) <= 100
 
     async def test_korean_initial_message_is_preserved_and_trimmed(self):
@@ -125,11 +125,22 @@ class TestPresetThreadNaming:
     async def test_kamill_presets_are_available(self):
         adapter = object.__new__(DiscordAdapter)
 
-        name, starter = DiscordAdapter._build_preset_thread(adapter, "kamill-forge")
+        ops_name, ops_starter = DiscordAdapter._build_preset_thread(adapter, "kamill-ops")
+        forge_name, forge_starter = DiscordAdapter._build_preset_thread(adapter, "kamill-forge")
 
-        assert name == "kamill-forge"
-        assert "No repo is anchored by default." in starter
-        assert "explicit approval" in starter
+        assert ops_name == "kamill-ops"
+        assert "Kamill runtime operations" in ops_starter
+        assert "Project/product work belongs" in ops_starter
+        assert forge_name == "kamill-forge"
+        assert "No repo is anchored by default." in forge_starter
+        assert "explicit approval" in forge_starter
+
+    async def test_retired_kamill_subpresets_are_not_available(self):
+        adapter = object.__new__(DiscordAdapter)
+
+        for target in ["hermes-core", "hermes-agent", "discord-gateway", "kamill-memory-skills"]:
+            with pytest.raises(ValueError, match="Unknown thread preset"):
+                DiscordAdapter._build_preset_thread(adapter, target)
 
     async def test_thread_seed_message_is_short_public_anchor(self):
         seed = DiscordAdapter._build_thread_seed_message("general · test")
