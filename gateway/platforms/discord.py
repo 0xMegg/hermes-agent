@@ -3175,7 +3175,7 @@ class DiscordAdapter(BasePlatformAdapter):
             target="Thread preset",
             task="Optional task suffix for the thread name, e.g. orders-api",
             message="Optional initial request to append after the preset starter",
-            auto_archive_duration="Auto-archive in minutes (60, 1440, 4320, 10080)",
+            auto_archive_duration="Auto-archive in minutes (60, 1440, 4320, 10080; default 10080)",
         )
         @discord.app_commands.choices(target=[
             discord.app_commands.Choice(name="general", value="general"),
@@ -3187,13 +3187,18 @@ class DiscordAdapter(BasePlatformAdapter):
             discord.app_commands.Choice(name="nexus", value="nexus"),
             discord.app_commands.Choice(name="bestst", value="bestst"),
             discord.app_commands.Choice(name="hermes-core", value="hermes-core"),
+            discord.app_commands.Choice(name="hermes-agent", value="hermes-agent"),
+            discord.app_commands.Choice(name="discord-gateway", value="discord-gateway"),
+            discord.app_commands.Choice(name="kamill-forge", value="kamill-forge"),
+            discord.app_commands.Choice(name="kamill-ops", value="kamill-ops"),
+            discord.app_commands.Choice(name="kamill-memory-skills", value="kamill-memory-skills"),
         ])
         async def slash_thread(
             interaction: discord.Interaction,
             target: str,
             task: str = "",
             message: str = "",
-            auto_archive_duration: int = 1440,
+            auto_archive_duration: int = 10080,
         ):
             # defer() is performed inside the handler *after* the auth gate
             # so a rejected invoker can receive an ephemeral rejection.
@@ -3703,8 +3708,8 @@ Reply to me in Korean.""",
         },
         "bestst": {
             "name": "bestst",
-            "starter": """This thread is for bestst.
-Repo path: /Users/qnb/dev/workouts/beststcad
+            "starter": """This thread is for BestST.
+Repo path: /Users/qnb/dev/workouts/bestst
 
 Use this repo as cwd for repo-specific inspection, tests, and implementation.
 Do not print secrets, env contents, auth tokens, or API keys.
@@ -3718,6 +3723,56 @@ Repo path: /Users/qnb/dev/templates/hermes-core
 Treat this as Hermes operating-layer template work, not product work.
 Do not change policy/workflow artifacts without explicit scoped approval.
 Do not print secrets, env contents, auth tokens, or API keys.
+Reply to me in Korean.""",
+        },
+        "hermes-agent": {
+            "name": "hermes-agent",
+            "starter": """This thread is for Hermes Agent runtime development.
+Repo path: /Users/qnb/.hermes/hermes-agent
+
+Treat this as live Kamill/Hermes runtime work.
+Inspect repo instructions before editing, keep changes scoped, and close out with working tree, sync, verification, and runtime status.
+Do not print secrets, .env contents, auth tokens, or API keys.
+Reply to me in Korean.""",
+        },
+        "discord-gateway": {
+            "name": "discord-gateway",
+            "starter": """This thread is for Hermes Discord Gateway work.
+Repo path: /Users/qnb/.hermes/hermes-agent
+
+Scope work to gateway/Discord behavior unless I explicitly approve broader Hermes changes.
+Do not print Discord tokens, .env contents, auth tokens, or API keys.
+Before restarting the gateway, explain why; after restarting, verify gateway status and Discord connectivity.
+Reply to me in Korean.""",
+        },
+        "kamill-forge": {
+            "name": "kamill-forge",
+            "starter": """This thread is for Kamill Forge: improving Kamill's operating knowledge and self-improvement workflow.
+
+No repo is anchored by default.
+If repo edits, memory changes, skill changes, config changes, gateway changes, or automation are needed, propose the change first and wait for explicit approval.
+Keep proposal, review, approval, and application boundaries clear.
+Do not print secrets, .env contents, auth tokens, or API keys.
+Reply to me in Korean.""",
+        },
+        "kamill-ops": {
+            "name": "kamill-ops",
+            "starter": """This thread is for Kamill/Hermes operations.
+
+No repo is anchored by default.
+Use this for gateway health, auth recovery, model/provider checks, Discord workflow, and operational troubleshooting.
+Do not mutate config, auth, gateway service state, memory, skills, or repos without explicit approval.
+Do not print secrets, .env contents, auth tokens, or API keys.
+Reply to me in Korean.""",
+        },
+        "kamill-memory-skills": {
+            "name": "kamill-memory-skills",
+            "starter": """This thread is for Kamill memory, skills, and session recall hygiene.
+
+No repo is anchored by default.
+Distinguish durable user/environment memory from reusable procedural skills and temporary session progress.
+Do not add, remove, or patch memory/skills without explaining the proposed entry/change and getting explicit approval when the change is nontrivial.
+Do not print secrets, .env contents, auth tokens, or API keys.
 Reply to me in Korean.""",
         },
     }
@@ -3766,6 +3821,20 @@ Reply to me in Korean.""",
             return base[: cls._THREAD_TITLE_MAX].rstrip(" -._·") or base
         shortened = suffix[: max(0, available - 1)].rstrip(" -._·")
         return f"{base}{cls._THREAD_TITLE_SEPARATOR}{shortened}…"
+
+    @classmethod
+    def _build_thread_seed_message(cls, thread_name: str) -> str:
+        """Return a short public parent-channel message used as thread anchor.
+
+        Slash command responses are ephemeral and direct-created threads can
+        disappear from Discord's active thread list.  Creating the thread from
+        this visible seed message leaves a durable parent-channel breadcrumb,
+        similar to a user mentioning the bot and letting Discord show the
+        nested thread preview.
+        """
+        safe_name = (thread_name or "Kamill thread").strip() or "Kamill thread"
+        safe_name = safe_name[: cls._THREAD_TITLE_MAX].rstrip(" -._·") or "Kamill thread"
+        return f"🧵 Kamill thread: **{safe_name}**"
 
     @classmethod
     def _summarize_thread_title_suffix(cls, text: str) -> str:
@@ -3821,11 +3890,14 @@ Reply to me in Korean.""",
         if not await self._check_slash_authorization(interaction, "/thread"):
             return
         await interaction.response.defer(ephemeral=True)
+        seed_message = self._build_thread_seed_message(name)
         result = await self._create_thread(
             interaction,
             name=name,
             message=message,
             auto_archive_duration=auto_archive_duration,
+            seed_message=seed_message,
+            post_initial_message=False,
         )
 
         if not result.get("success"):
@@ -3969,12 +4041,15 @@ Reply to me in Korean.""",
         name: str,
         message: str = "",
         auto_archive_duration: int = 1440,
+        seed_message: str = "",
+        post_initial_message: bool = True,
     ) -> Dict[str, Any]:
         """Create a thread in the current Discord channel.
 
-        Tries ``parent_channel.create_thread()`` first.  If Discord rejects
-        that (e.g. permission issues), falls back to sending a seed message
-        and creating the thread from it.
+        When ``seed_message`` is provided, prefer creating the thread from a
+        visible parent-channel seed message.  This leaves a durable Discord UI
+        breadcrumb and thread preview.  Without ``seed_message``, preserve the
+        older direct-create-first behavior.
         """
         name = (name or "").strip()
         if not name:
@@ -3997,6 +4072,32 @@ Reply to me in Korean.""",
         display_name = getattr(getattr(interaction, "user", None), "display_name", None) or "unknown user"
         reason = f"Requested by {display_name} via /thread"
         starter_message = (message or "").strip()
+        seed_content = (seed_message or "").strip()
+
+        async def _post_starter_if_requested(thread: Any) -> None:
+            if starter_message and post_initial_message:
+                await thread.send(starter_message)
+
+        if seed_content:
+            try:
+                seed_msg = await parent_channel.send(seed_content)
+                thread = await seed_msg.create_thread(
+                    name=name,
+                    auto_archive_duration=auto_archive_duration,
+                    reason=reason,
+                )
+                await _post_starter_if_requested(thread)
+                return {
+                    "success": True,
+                    "thread_id": str(thread.id),
+                    "thread_name": getattr(thread, "name", None) or name,
+                }
+            except Exception as seed_error:
+                logger.warning(
+                    "[%s] Seed-message /thread creation failed; falling back to direct create: %s",
+                    self.name,
+                    seed_error,
+                )
 
         try:
             thread = await parent_channel.create_thread(
@@ -4004,8 +4105,7 @@ Reply to me in Korean.""",
                 auto_archive_duration=auto_archive_duration,
                 reason=reason,
             )
-            if starter_message:
-                await thread.send(starter_message)
+            await _post_starter_if_requested(thread)
             return {
                 "success": True,
                 "thread_id": str(thread.id),
@@ -4013,13 +4113,15 @@ Reply to me in Korean.""",
             }
         except Exception as direct_error:
             try:
-                seed_content = starter_message or f"\U0001f9f5 Thread created by Hermes: **{name}**"
-                seed_msg = await parent_channel.send(seed_content)
+                fallback_seed_content = seed_content or starter_message or f"\U0001f9f5 Thread created by Hermes: **{name}**"
+                seed_msg = await parent_channel.send(fallback_seed_content)
                 thread = await seed_msg.create_thread(
                     name=name,
                     auto_archive_duration=auto_archive_duration,
                     reason=reason,
                 )
+                if not seed_content:
+                    await _post_starter_if_requested(thread)
                 return {
                     "success": True,
                     "thread_id": str(thread.id),

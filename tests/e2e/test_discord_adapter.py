@@ -5,6 +5,7 @@ Covers the fix for slash commands not being recognized when sent via
 """
 
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -120,6 +121,47 @@ class TestPresetThreadNaming:
         )
 
         assert name == "general"
+
+    async def test_kamill_presets_are_available(self):
+        adapter = object.__new__(DiscordAdapter)
+
+        name, starter = DiscordAdapter._build_preset_thread(adapter, "kamill-forge")
+
+        assert name == "kamill-forge"
+        assert "No repo is anchored by default." in starter
+        assert "explicit approval" in starter
+
+    async def test_thread_seed_message_is_short_public_anchor(self):
+        seed = DiscordAdapter._build_thread_seed_message("general · test")
+
+        assert seed == "🧵 Kamill thread: **general · test**"
+        assert "Repo path" not in seed
+
+    async def test_create_thread_prefers_visible_seed_message_without_public_starter(self):
+        adapter = object.__new__(DiscordAdapter)
+        thread = SimpleNamespace(id=33333, name="general · test", send=AsyncMock())
+        seed_message = SimpleNamespace(create_thread=AsyncMock(return_value=thread))
+        parent_channel = SimpleNamespace(id=22222, name="hermes", send=AsyncMock(return_value=seed_message))
+        interaction = SimpleNamespace(
+            channel=parent_channel,
+            user=SimpleNamespace(display_name="tester"),
+        )
+
+        result = await DiscordAdapter._create_thread(
+            adapter,
+            interaction,
+            name="general · test",
+            message="long starter prompt that should stay synthetic",
+            auto_archive_duration=10080,
+            seed_message="🧵 Kamill thread: **general · test**",
+            post_initial_message=False,
+        )
+
+        assert result == {"success": True, "thread_id": "33333", "thread_name": "general · test"}
+        parent_channel.send.assert_awaited_once_with("🧵 Kamill thread: **general · test**")
+        seed_message.create_thread.assert_awaited_once()
+        assert seed_message.create_thread.await_args.kwargs["auto_archive_duration"] == 10080
+        thread.send.assert_not_awaited()
 
 
 class TestAutoThreadingPreservesCommand:
