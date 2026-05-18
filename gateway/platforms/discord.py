@@ -4249,17 +4249,88 @@ Reply to me in Korean.""",
             )
             embed.add_field(name="Reason", value=description, inline=False)
 
+            approval_id = str(metadata.get("approval_id") or "") if metadata else ""
             view = ExecApprovalView(
                 session_key=session_key,
+                approval_id=approval_id,
                 allowed_user_ids=self._allowed_user_ids,
                 allowed_role_ids=self._allowed_role_ids,
             )
 
             msg = await channel.send(embed=embed, view=view)
+            try:
+                asyncio.create_task(
+                    self._send_exec_approval_notification(
+                        channel=channel,
+                        approval_message=msg,
+                        description=description,
+                        approval_id=approval_id,
+                    )
+                )
+            except Exception as exc:
+                logger.debug("[%s] Approval secondary notification scheduling failed: %s", self.name, exc)
             return SendResult(success=True, message_id=str(msg.id))
 
         except Exception as e:
             return SendResult(success=False, error=str(e))
+
+    async def _send_exec_approval_notification(
+        self,
+        *,
+        channel,
+        approval_message,
+        description: str,
+        approval_id: str = "",
+    ) -> None:
+        """Send a secondary notification for a dangerous-command approval.
+
+        The canonical approval card remains in the source channel/thread.
+        This nudge is intentionally command-free so shell argv, env values,
+        tokens, or other secrets are not copied into DMs or ping messages.
+        """
+        if not self._client:
+            return
+
+        numeric_user_ids = [uid for uid in sorted(self._allowed_user_ids) if str(uid).isdigit()]
+        if not numeric_user_ids:
+            return
+
+        link = getattr(approval_message, "jump_url", "") or "the approval message"
+        body = (
+            "⚠️ Kamill approval needed\n\n"
+            "A dangerous command is waiting for approval. "
+            "Open the canonical approval request to review details and decide.\n"
+            f"Approval request: {link}"
+        )
+        if approval_id:
+            body += f"\nApproval ID: `{approval_id[:12]}`"
+
+        dm_sent = False
+        for uid in numeric_user_ids:
+            try:
+                user = self._client.get_user(int(uid))
+                if user is None:
+                    user = await self._client.fetch_user(int(uid))
+                await user.send(body)
+                dm_sent = True
+            except Exception as exc:
+                logger.debug(
+                    "[%s] Approval DM notification failed for user %s: %s",
+                    self.name, uid, exc,
+                )
+
+        if dm_sent:
+            return
+
+        mentions = " ".join(f"<@{uid}>" for uid in numeric_user_ids)
+        fallback = (
+            f"{mentions} ⚠️ Kamill approval needed. "
+            f"Please check the approval request above: {link}"
+        )
+        try:
+            await channel.send(fallback)
+        except Exception as exc:
+            logger.debug("[%s] Approval mention fallback failed: %s", self.name, exc)
 
     async def send_slash_confirm(
         self, chat_id: str, title: str, message: str, session_key: str,
@@ -5023,12 +5094,15 @@ if DISCORD_AVAILABLE:
             session_key: str,
             allowed_user_ids: set,
             allowed_role_ids: Optional[set] = None,
+            approval_id: str = "",
         ):
             super().__init__(timeout=300)  # 5-minute timeout
             self.session_key = session_key
+            self.approval_id = approval_id
             self.allowed_user_ids = allowed_user_ids
             self.allowed_role_ids = allowed_role_ids or set()
             self.resolved = False
+            self._resolve_lock = asyncio.Lock()
 
         def _check_auth(self, interaction: discord.Interaction) -> bool:
             """Verify the user clicking is authorized."""
@@ -5040,43 +5114,76 @@ if DISCORD_AVAILABLE:
             self, interaction: discord.Interaction, choice: str,
             color: discord.Color, label: str,
         ):
-            """Resolve the approval via the gateway approval queue and update the embed."""
-            if self.resolved:
-                await interaction.response.send_message(
-                    "This approval has already been resolved~", ephemeral=True
-                )
-                return
+            """Resolve this exact approval ID and update the embed."""
+            async with self._resolve_lock:
+                if self.resolved:
+                    await interaction.response.send_message(
+                        "This approval has already been resolved~", ephemeral=True
+                    )
+                    return
 
-            if not self._check_auth(interaction):
-                await interaction.response.send_message(
-                    "You're not authorized to approve commands~", ephemeral=True
-                )
-                return
+                if not self._check_auth(interaction):
+                    await interaction.response.send_message(
+                        "You're not authorized to approve commands~", ephemeral=True
+                    )
+                    return
 
-            self.resolved = True
+                if not self.approval_id:
+                    logger.warning(
+                        "Discord approval button missing approval_id for session %s; failing closed",
+                        self.session_key,
+                    )
+                    status = "not_found"
+                else:
+                    # Unblock the waiting agent thread via the id-aware gateway queue.
+                    # Do this before marking the UI resolved so stale/expired cards fail
+                    # closed instead of approving whatever FIFO entry is currently oldest.
+                    try:
+                        from tools.approval import resolve_gateway_approval_by_id
+                        status = resolve_gateway_approval_by_id(
+                            self.session_key, self.approval_id, choice,
+                        )
+                        logger.info(
+                            "Discord button approval resolution for session %s approval_id=%s "
+                            "choice=%s user=%s status=%s",
+                            self.session_key, self.approval_id, choice,
+                            interaction.user.display_name, status,
+                        )
+                    except Exception as exc:
+                        logger.error("Failed to resolve gateway approval from button: %s", exc)
+                        status = "not_found"
 
-            # Update the embed with the decision
-            embed = interaction.message.embeds[0] if interaction.message.embeds else None
-            if embed:
-                embed.color = color
-                embed.set_footer(text=f"{label} by {interaction.user.display_name}")
+                if status != "resolved":
+                    self.resolved = True
+                    embed = interaction.message.embeds[0] if interaction.message.embeds else None
+                    if embed:
+                        embed.color = discord.Color.dark_grey()
+                        embed.set_footer(text="Approval expired or already resolved")
+                    for child in self.children:
+                        child.disabled = True
+                    await interaction.response.edit_message(embed=embed, view=self)
+                    try:
+                        await interaction.followup.send(
+                            "This approval request is no longer pending, so nothing was approved.",
+                            ephemeral=True,
+                        )
+                    except Exception:
+                        pass
+                    return
 
-            # Disable all buttons
-            for child in self.children:
-                child.disabled = True
+                self.resolved = True
 
-            await interaction.response.edit_message(embed=embed, view=self)
+                # Update the embed with the decision
+                embed = interaction.message.embeds[0] if interaction.message.embeds else None
+                if embed:
+                    embed.color = color
+                    embed.set_footer(text=f"{label} by {interaction.user.display_name}")
 
-            # Unblock the waiting agent thread via the gateway approval queue
-            try:
-                from tools.approval import resolve_gateway_approval
-                count = resolve_gateway_approval(self.session_key, choice)
-                logger.info(
-                    "Discord button resolved %d approval(s) for session %s (choice=%s, user=%s)",
-                    count, self.session_key, choice, interaction.user.display_name,
-                )
-            except Exception as exc:
-                logger.error("Failed to resolve gateway approval from button: %s", exc)
+                # Disable all buttons
+                for child in self.children:
+                    child.disabled = True
+
+                await interaction.response.edit_message(embed=embed, view=self)
 
         @discord.ui.button(label="Allow Once", style=discord.ButtonStyle.green)
         async def allow_once(

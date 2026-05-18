@@ -142,7 +142,9 @@ def test_exec_approval_view_accepts_role_allowlist():
         session_key="sess-1",
         allowed_user_ids={"11111"},
         allowed_role_ids={42},
+        approval_id="approval-1",
     )
+    assert view.approval_id == "approval-1"
     # Role-only user passes
     assert view._check_auth(_interaction(99999, role_ids=[42])) is True
     # Neither user nor role match: reject

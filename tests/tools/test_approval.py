@@ -15,6 +15,7 @@ from tools.approval import (
     load_permanent,
     prompt_dangerous_approval,
     submit_pending,
+    resolve_gateway_approval_by_id,
 )
 
 
@@ -141,6 +142,51 @@ class TestApproveAndCheckSession:
         assert is_approved(key, "rm") is False
         approve_session(key, "rm")
         assert is_approved(key, "rm") is True
+
+
+class TestGatewayApprovalById:
+    def teardown_method(self):
+        with approval_module._lock:
+            approval_module._gateway_queues.clear()
+
+    def test_resolve_by_id_targets_matching_entry_only(self):
+        session_key = "gateway-by-id"
+        entry_a = approval_module._ApprovalEntry({"command": "cmd-a"})
+        entry_b = approval_module._ApprovalEntry({"command": "cmd-b"})
+        with approval_module._lock:
+            approval_module._gateway_queues[session_key] = [entry_a, entry_b]
+
+        assert resolve_gateway_approval_by_id(session_key, entry_b.approval_id, "once") == "resolved"
+
+        assert entry_b.result == "once"
+        assert entry_b.event.is_set()
+        assert entry_a.result is None
+        assert not entry_a.event.is_set()
+        with approval_module._lock:
+            assert approval_module._gateway_queues[session_key] == [entry_a]
+
+    def test_resolve_missing_id_does_not_resolve_current_pending(self):
+        session_key = "gateway-stale-id"
+        entry = approval_module._ApprovalEntry({"command": "cmd-current"})
+        with approval_module._lock:
+            approval_module._gateway_queues[session_key] = [entry]
+
+        assert resolve_gateway_approval_by_id(session_key, "stale-approval-id", "once") == "not_found"
+
+        assert entry.result is None
+        assert not entry.event.is_set()
+        with approval_module._lock:
+            assert approval_module._gateway_queues[session_key] == [entry]
+
+    def test_double_resolve_by_id_is_idempotent(self):
+        session_key = "gateway-double-resolve"
+        entry = approval_module._ApprovalEntry({"command": "cmd"})
+        with approval_module._lock:
+            approval_module._gateway_queues[session_key] = [entry]
+
+        assert resolve_gateway_approval_by_id(session_key, entry.approval_id, "deny") == "resolved"
+        assert resolve_gateway_approval_by_id(session_key, entry.approval_id, "once") == "not_found"
+        assert entry.result == "deny"
 
 
 class TestSessionKeyContext:

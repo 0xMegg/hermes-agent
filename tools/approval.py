@@ -16,6 +16,7 @@ import sys
 import threading
 import time
 import unicodedata
+import uuid
 from typing import Optional
 from hermes_cli.config import cfg_get
 
@@ -479,9 +480,10 @@ _permanent_approved: set = set()
 
 class _ApprovalEntry:
     """One pending dangerous-command approval inside a gateway session."""
-    __slots__ = ("event", "data", "result")
+    __slots__ = ("approval_id", "event", "data", "result")
 
     def __init__(self, data: dict):
+        self.approval_id = uuid.uuid4().hex
         self.event = threading.Event()
         self.data = data          # command, description, pattern_keys, …
         self.result: Optional[str] = None  # "once"|"session"|"always"|"deny"
@@ -543,6 +545,36 @@ def resolve_gateway_approval(session_key: str, choice: str,
         entry.result = choice
         entry.event.set()
     return len(targets)
+
+
+def resolve_gateway_approval_by_id(session_key: str, approval_id: str,
+                                    choice: str) -> str:
+    """Resolve a specific pending approval by its approval_id.
+
+    Unlike the FIFO ``resolve_gateway_approval``, this targets the exact entry
+    so button clicks on older approval cards cannot accidentally resolve a
+    newer pending approval.
+
+    Returns:
+        'resolved'  — the matching entry was found and unblocked.
+        'not_found' — no entry with that approval_id exists in the queue
+                      (either already resolved, timed out, or never created).
+    """
+    target = None
+    with _lock:
+        queue = _gateway_queues.get(session_key)
+        if queue:
+            for i, entry in enumerate(queue):
+                if entry.approval_id == approval_id:
+                    target = queue.pop(i)
+                    break
+            if not queue:
+                _gateway_queues.pop(session_key, None)
+    if target is None:
+        return 'not_found'
+    target.result = choice
+    target.event.set()
+    return 'resolved'
 
 
 def has_blocking_approval(session_key: str) -> bool:
@@ -1176,6 +1208,7 @@ def check_all_command_guards(command: str, env_type: str,
                 "description": combined_desc,
             }
             entry = _ApprovalEntry(approval_data)
+            approval_data["approval_id"] = entry.approval_id
             with _lock:
                 _gateway_queues.setdefault(session_key, []).append(entry)
 
