@@ -26,12 +26,14 @@ PRs #9850, #9934, #7536):
 """
 
 import asyncio
+import json
 import time
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+import gateway.run as gateway_run
 from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent, MessageType, SendResult
 from gateway.run import (
@@ -1154,6 +1156,57 @@ async def test_restart_banner_uses_try_to_resume_wording():
     msg = adapter.sent[0]
     assert "restarting" in msg
     assert "try to resume" in msg
+
+
+@pytest.mark.asyncio
+async def test_restart_shutdown_records_active_chat_for_completion_notice(tmp_path, monkeypatch):
+    """Agent-triggered restarts may not pass through /restart, so record the
+    active chat that saw the shutdown banner as the post-restart target."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    runner, _adapter = make_restart_runner()
+    runner._restart_requested = True
+    runner._running_agents["agent:main:telegram:dm:999"] = MagicMock()
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    notify_path = tmp_path / ".restart_notify.json"
+    assert notify_path.exists()
+    data = json.loads(notify_path.read_text())
+    assert data == {"platform": "telegram", "chat_id": "999"}
+
+
+@pytest.mark.asyncio
+async def test_restart_shutdown_preserves_existing_completion_notice_target(tmp_path, monkeypatch):
+    """Do not overwrite the explicit /restart requester target if one exists."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    (tmp_path / ".restart_notify.json").write_text(
+        json.dumps({"platform": "telegram", "chat_id": "requester"})
+    )
+    runner, _adapter = make_restart_runner()
+    runner._restart_requested = True
+    runner._running_agents["agent:main:telegram:dm:999"] = MagicMock()
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    data = json.loads((tmp_path / ".restart_notify.json").read_text())
+    assert data == {"platform": "telegram", "chat_id": "requester"}
+
+
+@pytest.mark.asyncio
+async def test_restart_shutdown_records_home_channel_for_completion_notice(tmp_path, monkeypatch):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    runner, _adapter = make_restart_runner()
+    runner._restart_requested = True
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="home-42",
+        name="Ops Home",
+    )
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    data = json.loads((tmp_path / ".restart_notify.json").read_text())
+    assert data == {"platform": "telegram", "chat_id": "home-42"}
 
 
 @pytest.mark.asyncio

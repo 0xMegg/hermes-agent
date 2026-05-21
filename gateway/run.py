@@ -365,6 +365,35 @@ def _restart_notification_pending() -> bool:
     return (_hermes_home / ".restart_notify.json").exists()
 
 
+def _write_restart_notification_target(
+    *,
+    platform: Any,
+    chat_id: Any,
+    thread_id: Any = None,
+) -> None:
+    """Persist a best-effort post-restart delivery target.
+
+    Slash-command restarts know the requester directly, but natural-language
+    restarts and agent-triggered restarts may only surface as an active session
+    being drained.  This marker lets the next gateway instance say "restart is
+    done" in the same chat/thread that saw the shutdown notice.
+    """
+    platform_value = getattr(platform, "value", platform)
+    if not platform_value or not chat_id:
+        return
+    notify_data = {
+        "platform": str(platform_value),
+        "chat_id": str(chat_id),
+    }
+    if thread_id:
+        notify_data["thread_id"] = str(thread_id)
+    atomic_json_write(
+        _hermes_home / ".restart_notify.json",
+        notify_data,
+        indent=None,
+    )
+
+
 # Mark this process as a gateway so cli.py's module-level load_cli_config()
 # knows not to clobber TERMINAL_CWD if lazily imported.
 os.environ["_HERMES_GATEWAY"] = "1"
@@ -2818,6 +2847,20 @@ class GatewayRunner:
                     continue
 
                 notified.add(dedup_key)
+                if self._restart_requested and not _restart_notification_pending():
+                    try:
+                        _write_restart_notification_target(
+                            platform=platform_str,
+                            chat_id=chat_id,
+                            thread_id=thread_id,
+                        )
+                    except Exception as e:
+                        logger.debug(
+                            "Failed to write active-session restart notify file for %s:%s: %s",
+                            platform_str,
+                            chat_id,
+                            e,
+                        )
                 logger.info(
                     "Sent shutdown notification to active chat %s:%s",
                     platform_str, chat_id,
@@ -2866,6 +2909,20 @@ class GatewayRunner:
                     continue
 
                 notified.add(dedup_key)
+                if self._restart_requested and not _restart_notification_pending():
+                    try:
+                        _write_restart_notification_target(
+                            platform=platform.value,
+                            chat_id=home.chat_id,
+                            thread_id=home.thread_id,
+                        )
+                    except Exception as e:
+                        logger.debug(
+                            "Failed to write home-channel restart notify file for %s:%s: %s",
+                            platform.value,
+                            home.chat_id,
+                            e,
+                        )
                 logger.info(
                     "Sent shutdown notification to home channel %s:%s",
                     platform.value,
@@ -8711,16 +8768,10 @@ class GatewayRunner:
         # Save the requester's routing info so the new gateway process can
         # notify them once it comes back online.
         try:
-            notify_data = {
-                "platform": event.source.platform.value if event.source.platform else None,
-                "chat_id": event.source.chat_id,
-            }
-            if event.source.thread_id:
-                notify_data["thread_id"] = event.source.thread_id
-            atomic_json_write(
-                _hermes_home / ".restart_notify.json",
-                notify_data,
-                indent=None,
+            _write_restart_notification_target(
+                platform=event.source.platform,
+                chat_id=event.source.chat_id,
+                thread_id=event.source.thread_id,
             )
         except Exception as e:
             logger.debug("Failed to write restart notify file: %s", e)
