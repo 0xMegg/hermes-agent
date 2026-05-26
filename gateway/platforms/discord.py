@@ -3170,27 +3170,10 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_deny(interaction: discord.Interaction, scope: str = ""):
             await self._run_simple_slash(interaction, f"/deny {scope}".strip())
 
-        @tree.command(name="thread", description="Create a repo/general thread and start a Hermes session in it")
-        @discord.app_commands.describe(
-            target="Thread preset",
-            task="Optional task suffix for the thread name, e.g. orders-api",
-            message="Optional initial request to append after the preset starter",
-            auto_archive_duration="Auto-archive in minutes (60, 1440, 4320, 10080; default 10080)",
-        )
-        @discord.app_commands.choices(target=[
-            discord.app_commands.Choice(name="general", value="general"),
-            discord.app_commands.Choice(name="kody-workspace", value="kody-workspace"),
-            discord.app_commands.Choice(name="kody-frontend", value="kody-frontend"),
-            discord.app_commands.Choice(name="kody-backend", value="kody-backend"),
-            discord.app_commands.Choice(name="divebase", value="divebase"),
-            discord.app_commands.Choice(name="honbabseoul", value="honbabseoul"),
-            discord.app_commands.Choice(name="nexus", value="nexus"),
-            discord.app_commands.Choice(name="bestst", value="bestst"),
-            discord.app_commands.Choice(name="kamill-ops", value="kamill-ops"),
-            discord.app_commands.Choice(name="kamill-forge", value="kamill-forge"),
-        ])
-        async def slash_thread(
+        async def _run_preset_thread_slash(
             interaction: discord.Interaction,
+            *,
+            command_name: str,
             target: str,
             task: str = "",
             message: str = "",
@@ -3206,10 +3189,11 @@ class DiscordAdapter(BasePlatformAdapter):
                 _gu = getattr(interaction, "guild", None)
                 _us = getattr(interaction, "user", None)
                 logger.info(
-                    "[%s] /thread invoked target=%s task=%s "
+                    "[%s] /%s invoked target=%s task=%s "
                     "channel=%s(%s) guild=%s(%s) user=%s(%s) "
                     "auto_archive=%s message_provided=%s",
                     self.name,
+                    command_name,
                     target,
                     task,
                     getattr(_ch, "id", None),
@@ -3222,9 +3206,99 @@ class DiscordAdapter(BasePlatformAdapter):
                     bool(message),
                 )
             except Exception:
-                logger.debug("[%s] /thread invocation log failed", self.name, exc_info=True)
+                logger.debug("[%s] /%s invocation log failed", self.name, command_name, exc_info=True)
             name, starter = self._build_preset_thread(target, task, message)
-            await self._handle_thread_create_slash(interaction, name, starter, auto_archive_duration)
+            await self._handle_thread_create_slash(
+                interaction,
+                name,
+                starter,
+                auto_archive_duration,
+                command_name=f"/{command_name}",
+            )
+
+        @tree.command(name="project", description="Create an anchored main-project thread and start a Hermes session in it")
+        @discord.app_commands.describe(
+            target="Project preset",
+            task="Optional task suffix for the thread name, e.g. orders-api",
+            message="Optional initial request to append after the preset starter",
+            auto_archive_duration="Auto-archive in minutes (60, 1440, 4320, 10080; default 10080)",
+        )
+        @discord.app_commands.choices(target=[
+            discord.app_commands.Choice(name="kody-workspace", value="kody-workspace"),
+            discord.app_commands.Choice(name="divebase", value="divebase"),
+            discord.app_commands.Choice(name="bestst", value="bestst"),
+        ])
+        async def slash_project(
+            interaction: discord.Interaction,
+            target: str,
+            task: str = "",
+            message: str = "",
+            auto_archive_duration: int = 10080,
+        ):
+            await _run_preset_thread_slash(
+                interaction,
+                command_name="project",
+                target=target,
+                task=task,
+                message=message,
+                auto_archive_duration=auto_archive_duration,
+            )
+
+        @tree.command(name="side-project", description="Create an anchored side-project thread and start a Hermes session in it")
+        @discord.app_commands.describe(
+            target="Side-project preset",
+            task="Optional task suffix for the thread name, e.g. experiment",
+            message="Optional initial request to append after the preset starter",
+            auto_archive_duration="Auto-archive in minutes (60, 1440, 4320, 10080; default 10080)",
+        )
+        @discord.app_commands.choices(target=[
+            discord.app_commands.Choice(name="honbabseoul", value="honbabseoul"),
+            discord.app_commands.Choice(name="nexus", value="nexus"),
+        ])
+        async def slash_side_project(
+            interaction: discord.Interaction,
+            target: str,
+            task: str = "",
+            message: str = "",
+            auto_archive_duration: int = 10080,
+        ):
+            await _run_preset_thread_slash(
+                interaction,
+                command_name="side-project",
+                target=target,
+                task=task,
+                message=message,
+                auto_archive_duration=auto_archive_duration,
+            )
+
+        @tree.command(name="kamill", description="Create a Kamill coordination thread and start a Hermes session in it")
+        @discord.app_commands.describe(
+            target="Kamill coordination preset",
+            task="Optional task suffix for the thread name, e.g. gateway-health",
+            message="Optional initial request to append after the preset starter",
+            auto_archive_duration="Auto-archive in minutes (60, 1440, 4320, 10080; default 10080)",
+        )
+        @discord.app_commands.choices(target=[
+            discord.app_commands.Choice(name="general", value="general"),
+            discord.app_commands.Choice(name="ops", value="kamill-ops"),
+            discord.app_commands.Choice(name="forge", value="kamill-forge"),
+            discord.app_commands.Choice(name="init", value="kamill-init"),
+        ])
+        async def slash_kamill(
+            interaction: discord.Interaction,
+            target: str,
+            task: str = "",
+            message: str = "",
+            auto_archive_duration: int = 10080,
+        ):
+            await _run_preset_thread_slash(
+                interaction,
+                command_name="kamill",
+                target=target,
+                task=task,
+                message=message,
+                auto_archive_duration=auto_archive_duration,
+            )
 
         @tree.command(name="queue", description="Queue a prompt for the next turn (doesn't interrupt)")
         @discord.app_commands.describe(prompt="The prompt to queue")
@@ -3651,28 +3725,9 @@ Reply to me in Korean.""",
             "starter": """This thread is for KODY orchestration root.
 Repo path: /Users/qnb/dev/workouts/kody-workspace
 
-Use this repo for planning, cross-repo gates, routing, and closeout only.
-Route product implementation to kody-backend or kody-frontend threads.
-Reply to me in Korean.""",
-        },
-        "kody-frontend": {
-            "name": "kody-frontend",
-            "starter": """This thread is for kody-frontend.
-Repo path: /Users/qnb/dev/workouts/kody-workspace/kody-frontend
-
-Use this repo as cwd for frontend inspection, tests, and implementation.
-Preserve prototype/mock-data discipline unless integration work is explicitly approved.
+Use this repo for KODY workspace planning, cross-repo gates, routing, closeout, and coordination of kody-frontend/kody-backend work.
+Run product implementation and child-local verification from the target child repo when needed.
 Do not print secrets, .env contents, auth tokens, or API keys.
-Reply to me in Korean.""",
-        },
-        "kody-backend": {
-            "name": "kody-backend",
-            "starter": """This thread is for kody-backend.
-Repo path: /Users/qnb/dev/workouts/kody-workspace/kody-backend
-
-Use this repo as cwd for backend inspection, tests, and implementation.
-Do not print secrets, .env contents, auth tokens, or API keys.
-Do not run Prisma schema/migration commands unless explicitly approved.
 Reply to me in Korean.""",
         },
         "divebase": {
@@ -3718,6 +3773,17 @@ Reply to me in Korean.""",
 No repo is anchored by default.
 If repo edits, memory changes, skill changes, config changes, gateway changes, or automation are needed, propose the change first and wait for explicit approval.
 Keep proposal, review, approval, and application boundaries clear.
+Do not print secrets, .env contents, auth tokens, or API keys.
+Reply to me in Korean.""",
+        },
+        "kamill-init": {
+            "name": "kamill-init",
+            "starter": """This thread is for Kamill project/init intake.
+
+No repo is anchored by default.
+Use this for pre-project conversation: classify whether an idea is a main project, side project, Kamill Forge item, ops issue, one-off task, or deferred item.
+Do not mutate config, auth, gateway service state, memory, skills, or repos without explicit approval.
+When scope is clear, prepare the destination slash command and anchor message for the promoted thread.
 Do not print secrets, .env contents, auth tokens, or API keys.
 Reply to me in Korean.""",
         },
@@ -3842,9 +3908,10 @@ Reply to me in Korean.""",
         name: str,
         message: str = "",
         auto_archive_duration: int = 1440,
+        command_name: str = "/project",
     ) -> None:
         """Create a Discord thread from a slash command and start a session in it."""
-        if not await self._check_slash_authorization(interaction, "/thread"):
+        if not await self._check_slash_authorization(interaction, command_name):
             return
         await interaction.response.defer(ephemeral=True)
         seed_message = self._build_thread_seed_message(name)
@@ -3855,6 +3922,7 @@ Reply to me in Korean.""",
             auto_archive_duration=auto_archive_duration,
             seed_message=seed_message,
             post_initial_message=False,
+            command_name=command_name,
         )
 
         if not result.get("success"):
@@ -4000,6 +4068,7 @@ Reply to me in Korean.""",
         auto_archive_duration: int = 1440,
         seed_message: str = "",
         post_initial_message: bool = True,
+        command_name: str = "/project",
     ) -> Dict[str, Any]:
         """Create a thread in the current Discord channel.
 
@@ -4027,7 +4096,7 @@ Reply to me in Korean.""",
             return {"error": "Could not determine a parent text channel for the new thread."}
 
         display_name = getattr(getattr(interaction, "user", None), "display_name", None) or "unknown user"
-        reason = f"Requested by {display_name} via /thread"
+        reason = f"Requested by {display_name} via {command_name}"
         starter_message = (message or "").strip()
         seed_content = (seed_message or "").strip()
 

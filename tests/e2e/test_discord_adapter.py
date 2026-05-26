@@ -85,22 +85,22 @@ class TestPresetThreadNaming:
     async def test_explicit_task_becomes_human_readable_suffix(self):
         name, starter = DiscordAdapter._build_preset_thread(
             object.__new__(DiscordAdapter),
-            "kody-backend",
+            "kody-workspace",
             task="orders api",
             message="Please inspect the shipment flow.",
         )
 
-        assert name == "kody-backend · orders api"
+        assert name == "kody-workspace · orders api"
         assert "Initial request:\nPlease inspect the shipment flow." in starter
 
     async def test_initial_message_supplies_suffix_when_task_is_empty(self):
         name, _starter = DiscordAdapter._build_preset_thread(
             object.__new__(DiscordAdapter),
-            "kamill-ops",
+            "kamill-init",
             message="Improve Discord thread names from the first request and target metadata.",
         )
 
-        assert name == "kamill-ops · Improve Discord thread names from the first request"
+        assert name == "kamill-init · Improve Discord thread names from the first request"
         assert len(name) <= 100
 
     async def test_korean_initial_message_is_preserved_and_trimmed(self):
@@ -122,23 +122,36 @@ class TestPresetThreadNaming:
 
         assert name == "general"
 
-    async def test_kamill_presets_are_available(self):
+    async def test_main_project_and_kamill_presets_are_available(self):
         adapter = object.__new__(DiscordAdapter)
 
+        kody_name, kody_starter = DiscordAdapter._build_preset_thread(adapter, "kody-workspace")
         ops_name, ops_starter = DiscordAdapter._build_preset_thread(adapter, "kamill-ops")
         forge_name, forge_starter = DiscordAdapter._build_preset_thread(adapter, "kamill-forge")
+        init_name, init_starter = DiscordAdapter._build_preset_thread(adapter, "kamill-init")
 
+        assert kody_name == "kody-workspace"
+        assert "coordination of kody-frontend/kody-backend work" in kody_starter
         assert ops_name == "kamill-ops"
         assert "Kamill runtime operations" in ops_starter
         assert "Project/product work belongs" in ops_starter
         assert forge_name == "kamill-forge"
         assert "No repo is anchored by default." in forge_starter
         assert "explicit approval" in forge_starter
+        assert init_name == "kamill-init"
+        assert "pre-project conversation" in init_starter
 
-    async def test_retired_kamill_subpresets_are_not_available(self):
+    async def test_retired_or_consolidated_presets_are_not_available(self):
         adapter = object.__new__(DiscordAdapter)
 
-        for target in ["hermes-core", "hermes-agent", "discord-gateway", "kamill-memory-skills"]:
+        for target in [
+            "hermes-core",
+            "hermes-agent",
+            "discord-gateway",
+            "kamill-memory-skills",
+            "kody-frontend",
+            "kody-backend",
+        ]:
             with pytest.raises(ValueError, match="Unknown thread preset"):
                 DiscordAdapter._build_preset_thread(adapter, target)
 
