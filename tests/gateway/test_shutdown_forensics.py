@@ -65,9 +65,29 @@ class TestSnapshotShutdownContext:
 
     def test_under_systemd_flag_uses_invocation_id(self, monkeypatch):
         monkeypatch.setenv("INVOCATION_ID", "abc123")
+        monkeypatch.delenv("XPC_SERVICE_NAME", raising=False)
         ctx = sf.snapshot_shutdown_context(signal.SIGTERM)
+        assert ctx["service_manager"] == "systemd"
         assert ctx["under_systemd"] is True
+        assert ctx["under_launchd"] is False
         assert ctx["systemd_invocation_id"] == "abc123"
+
+    def test_under_launchd_flag_uses_hermes_xpc_service_name(self, monkeypatch):
+        monkeypatch.delenv("INVOCATION_ID", raising=False)
+        monkeypatch.setenv("XPC_SERVICE_NAME", "ai.hermes.gateway")
+        ctx = sf.snapshot_shutdown_context(signal.SIGTERM)
+        assert ctx["service_manager"] == "launchd"
+        assert ctx["under_systemd"] is False
+        assert ctx["under_launchd"] is True
+        assert ctx["launchd_xpc_service_name"] == "ai.hermes.gateway"
+
+    def test_interactive_macos_xpc_value_is_not_launchd_gateway(self, monkeypatch):
+        monkeypatch.delenv("INVOCATION_ID", raising=False)
+        monkeypatch.setenv("XPC_SERVICE_NAME", "0")
+        ctx = sf.snapshot_shutdown_context(signal.SIGTERM)
+        assert ctx["service_manager"] is None
+        assert ctx["under_systemd"] is False
+        assert ctx["under_launchd"] is False
 
     def test_under_systemd_false_without_invocation_id_and_normal_ppid(
         self, monkeypatch
@@ -127,6 +147,8 @@ class TestFormatters:
         ctx = sf.snapshot_shutdown_context(signal.SIGTERM)
         line = sf.format_context_for_log(ctx)
         assert "signal=SIGTERM" in line
+        assert "service_manager=" in line
+        assert "under_launchd=" in line
         assert "parent_pid=" in line
         assert "parent_cmdline=" in line
 

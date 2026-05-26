@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -131,16 +132,26 @@ def snapshot_shutdown_context(received_signal: Any = None) -> Dict[str, Any]:
         "self": _proc_summary(pid),
     }
 
-    # systemd context.  If we were started by a systemd unit, INVOCATION_ID
-    # is set in our env.  ppid==1 (init) is also a strong signal that
-    # systemd reaped+forwarded the SIGTERM.
+    # Service-manager context. systemd sets INVOCATION_ID/JOURNAL_STREAM;
+    # launchd sets XPC_SERVICE_NAME for LaunchAgent/LaunchDaemon children.
+    # Do NOT treat ppid==1 as systemd on macOS: launchd is PID 1 there.
     invocation_id = os.environ.get("INVOCATION_ID")
     if invocation_id:
         ctx["systemd_invocation_id"] = invocation_id
     journal_stream = os.environ.get("JOURNAL_STREAM")
     if journal_stream:
         ctx["systemd_journal_stream"] = journal_stream
-    ctx["under_systemd"] = bool(invocation_id) or ppid == 1
+    xpc_service_name = os.environ.get("XPC_SERVICE_NAME", "")
+    if xpc_service_name:
+        ctx["launchd_xpc_service_name"] = xpc_service_name
+    service_manager: Optional[str] = None
+    if invocation_id:
+        service_manager = "systemd"
+    elif xpc_service_name.startswith("ai.hermes."):
+        service_manager = "launchd"
+    ctx["service_manager"] = service_manager
+    ctx["under_systemd"] = service_manager == "systemd"
+    ctx["under_launchd"] = service_manager == "launchd"
 
     # Load average — high load points the finger at "something else
     # crushing the box" rather than "external killer".
@@ -205,7 +216,7 @@ def spawn_async_diagnostic(
     Runs as a detached subprocess so it can't block the asyncio event loop
     or compete with platform teardown.  The subprocess uses its own
     ``timeout`` so a wedged ``ps`` still self-cleans within
-    ``timeout_seconds``.
+    ``timeout_seconds`` when the GNU/coreutils ``timeout`` command is available.
 
     Returns the subprocess PID on success, ``None`` on failure.  Never
     raises.
@@ -254,8 +265,11 @@ def spawn_async_diagnostic(
         # would also reap us anyway, but defense in depth).  Without
         # start_new_session, a SIGKILL on our cgroup takes the diag down
         # before it can flush.
+        command = ["bash", "-c", script]
+        if shutil.which("timeout"):
+            command = ["timeout", f"{timeout_seconds:.0f}", *command]
         proc = subprocess.Popen(
-            ["timeout", f"{timeout_seconds:.0f}", "bash", "-c", script],
+            command,
             stdout=fd,
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
@@ -286,6 +300,8 @@ def format_context_for_log(ctx: Dict[str, Any]) -> str:
     parent_name = parent.get("name") or "?"
     parent_pid = parent.get("pid") or "?"
     under_systemd = "yes" if ctx.get("under_systemd") else "no"
+    under_launchd = "yes" if ctx.get("under_launchd") else "no"
+    service_manager = ctx.get("service_manager") or "none"
     load = ctx.get("loadavg_1m")
     load_str = f"{load:.2f}" if isinstance(load, (int, float)) else "?"
     extras: List[str] = []
@@ -302,7 +318,9 @@ def format_context_for_log(ctx: Dict[str, Any]) -> str:
     # Parent cmdline is the most useful single signal — log it prominently.
     return (
         f"signal={sig} "
+        f"service_manager={service_manager} "
         f"under_systemd={under_systemd} "
+        f"under_launchd={under_launchd} "
         f"parent_pid={parent_pid} "
         f"parent_name={parent_name} "
         f"loadavg_1m={load_str}"

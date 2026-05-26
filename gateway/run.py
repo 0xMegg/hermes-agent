@@ -678,6 +678,7 @@ from gateway.platforms.base import (
 from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
     GATEWAY_SERVICE_RESTART_EXIT_CODE,
+    detect_service_manager,
     parse_restart_drain_timeout,
 )
 
@@ -8802,8 +8803,9 @@ class GatewayRunner:
         # restarts us.  The detached subprocess approach (setsid + bash)
         # doesn't work under systemd because KillMode=mixed kills all
         # processes in the cgroup, including the detached helper.
-        _under_service = bool(os.environ.get("INVOCATION_ID"))  # systemd sets this
-        if _under_service:
+        service_manager = detect_service_manager()
+        if service_manager:
+            logger.info("Gateway restart requested under %s; using service-managed restart", service_manager)
             self.request_restart(detached=False, via_service=True)
         else:
             self.request_restart(detached=True, via_service=False)
@@ -16655,7 +16657,11 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         asyncio.create_task(runner.stop())
 
     def restart_signal_handler():
-        runner.request_restart(detached=False, via_service=True)
+        service_manager = detect_service_manager()
+        runner.request_restart(
+            detached=service_manager is None,
+            via_service=service_manager is not None,
+        )
     
     loop = asyncio.get_running_loop()
     if threading.current_thread() is threading.main_thread():
