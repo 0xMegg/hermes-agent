@@ -1254,6 +1254,17 @@ class DiscordAdapter(BasePlatformAdapter):
         raw = str(os.getenv("DISCORD_COMMAND_SYNC_ALLOW_RECREATE", "") or "").strip().lower()
         return raw in {"1", "true", "yes", "on"}
 
+    def _allow_discord_command_delete(self) -> bool:
+        """Return whether slash-command sync may remove commands unknown to this build.
+
+        Keeping deletion opt-in protects dogfood gateways during restarts,
+        plugin/core adapter switches, and branch changes. In those cases a
+        temporarily narrower command registry must not erase useful slash
+        commands from Discord just because the current process cannot see them.
+        """
+        raw = str(os.getenv("DISCORD_COMMAND_SYNC_ALLOW_DELETE", "") or "").strip().lower()
+        return raw in {"1", "true", "yes", "on"}
+
     def _log_discord_command_sync_summary(self, summary: Dict[str, int]) -> None:
         logger.info(
             "[%s] Safely reconciled %d slash command(s): unchanged=%d updated=%d recreated=%d created=%d deleted=%d",
@@ -1454,8 +1465,15 @@ class DiscordAdapter(BasePlatformAdapter):
             updated += 1
 
         for current in existing_by_key.values():
-            await mutate(http.delete_global_command, app_id, current.id)
-            deleted += 1
+            if self._allow_discord_command_delete():
+                await mutate(http.delete_global_command, app_id, current.id)
+                deleted += 1
+                continue
+            logger.warning(
+                "[%s] Skipping slash command delete for %s to avoid removing commands unknown to this build; set DISCORD_COMMAND_SYNC_ALLOW_DELETE=true to allow",
+                self.name,
+                getattr(current, "name", "<unknown>"),
+            )
 
         return {
             "total": len(desired_payloads),

@@ -347,7 +347,7 @@ async def test_connect_respects_slash_commands_opt_out(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_safe_sync_slash_commands_only_mutates_diffs():
+async def test_safe_sync_slash_commands_only_mutates_diffs(monkeypatch):
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
 
     class _DesiredCommand:
@@ -441,6 +441,25 @@ async def test_safe_sync_slash_commands_only_mutates_diffs():
         application_id=999,
         user=SimpleNamespace(id=999),
     )
+
+    summary = await adapter._safe_sync_slash_commands()
+
+    assert summary == {
+        "total": 3,
+        "unchanged": 1,
+        "updated": 1,
+        "recreated": 0,
+        "created": 1,
+        "deleted": 0,
+    }
+    fake_http.edit_global_command.assert_awaited_once_with(999, 12, desired_updated)
+    fake_http.upsert_global_command.assert_awaited_once_with(999, desired_created)
+    fake_http.delete_global_command.assert_not_awaited()
+
+    fake_http.edit_global_command.reset_mock()
+    fake_http.upsert_global_command.reset_mock()
+    fake_http.delete_global_command.reset_mock()
+    monkeypatch.setenv("DISCORD_COMMAND_SYNC_ALLOW_DELETE", "true")
 
     summary = await adapter._safe_sync_slash_commands()
 
