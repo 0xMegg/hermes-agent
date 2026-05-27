@@ -93,6 +93,29 @@ class TestPresetThreadNaming:
         assert name == "kody-workspace · orders api"
         assert "Initial request:\nPlease inspect the shipment flow." in starter
 
+    async def test_known_task_mode_adds_lifecycle_guidance(self):
+        name, starter = DiscordAdapter._build_preset_thread(
+            object.__new__(DiscordAdapter),
+            "divebase",
+            task="seed",
+            message="Turn the release checklist into acceptance criteria.",
+        )
+
+        assert name == "divebase · seed"
+        assert "Task mode: seed" in starter
+        assert "Seed Candidate" in starter
+        assert "Initial request:\nTurn the release checklist" in starter
+
+    async def test_task_mode_drives_auto_archive_when_user_selects_auto(self):
+        assert DiscordAdapter._resolve_thread_auto_archive_duration("seed", 0) == 4320
+        assert DiscordAdapter._resolve_thread_auto_archive_duration("incident", 0) == 10080
+        assert DiscordAdapter._resolve_thread_auto_archive_duration("archive", 0) == 1440
+        assert DiscordAdapter._resolve_thread_auto_archive_duration("custom free text", 0) == 10080
+
+    async def test_explicit_archive_duration_overrides_task_mode_default(self):
+        assert DiscordAdapter._resolve_thread_auto_archive_duration("archive", 10080) == 10080
+        assert DiscordAdapter._resolve_thread_auto_archive_duration("incident", 60) == 60
+
     async def test_initial_message_supplies_suffix_when_task_is_empty(self):
         name, _starter = DiscordAdapter._build_preset_thread(
             object.__new__(DiscordAdapter),

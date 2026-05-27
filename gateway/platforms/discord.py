@@ -3177,11 +3177,16 @@ class DiscordAdapter(BasePlatformAdapter):
             target: str,
             task: str = "",
             message: str = "",
-            auto_archive_duration: int = 10080,
+            auto_archive_duration: int = 0,
         ):
             # defer() is performed inside the handler *after* the auth gate
             # so a rejected invoker can receive an ephemeral rejection.
             #
+            resolved_archive_duration = self._resolve_thread_auto_archive_duration(
+                task,
+                auto_archive_duration,
+            )
+
             # Diagnostic: log the invocation envelope (preset metadata + ids
             # only — no message body, to avoid leaking user content/secrets).
             try:
@@ -3202,7 +3207,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     getattr(_gu, "name", None),
                     getattr(_us, "id", None),
                     getattr(_us, "name", None),
-                    auto_archive_duration,
+                    resolved_archive_duration,
                     bool(message),
                 )
             except Exception:
@@ -3212,28 +3217,50 @@ class DiscordAdapter(BasePlatformAdapter):
                 interaction,
                 name,
                 starter,
-                auto_archive_duration,
+                resolved_archive_duration,
                 command_name=f"/{command_name}",
             )
+
+        thread_task_choices = [
+            discord.app_commands.Choice(name="intake — classify and route unclear work", value="intake"),
+            discord.app_commands.Choice(name="seed — draft Seed Candidate and acceptance criteria", value="seed"),
+            discord.app_commands.Choice(name="plan — decompose before implementation", value="plan"),
+            discord.app_commands.Choice(name="execute — implement or perform the work", value="execute"),
+            discord.app_commands.Choice(name="review — inspect diff/PR/artifact", value="review"),
+            discord.app_commands.Choice(name="ops — runtime/config/auth operations", value="ops"),
+            discord.app_commands.Choice(name="incident — diagnose and recover a failure", value="incident"),
+            discord.app_commands.Choice(name="archive — close out or summarize", value="archive"),
+        ]
+        archive_choices = [
+            discord.app_commands.Choice(name="auto — based on task mode", value=0),
+            discord.app_commands.Choice(name="1 hour", value=60),
+            discord.app_commands.Choice(name="24 hours", value=1440),
+            discord.app_commands.Choice(name="3 days", value=4320),
+            discord.app_commands.Choice(name="7 days", value=10080),
+        ]
 
         @tree.command(name="project", description="Create an anchored main-project thread and start a Hermes session in it")
         @discord.app_commands.describe(
             target="Project preset",
-            task="Optional task suffix for the thread name, e.g. orders-api",
-            message="Optional initial request to append after the preset starter",
-            auto_archive_duration="Auto-archive in minutes (60, 1440, 4320, 10080; default 10080)",
+            task="Lifecycle mode for the new thread",
+            message="Optional initial request / seed note to append after the preset starter",
+            auto_archive_duration="Auto-archive duration; choose auto to derive it from task mode",
         )
-        @discord.app_commands.choices(target=[
-            discord.app_commands.Choice(name="kody-workspace", value="kody-workspace"),
-            discord.app_commands.Choice(name="divebase", value="divebase"),
-            discord.app_commands.Choice(name="bestst", value="bestst"),
-        ])
+        @discord.app_commands.choices(
+            target=[
+                discord.app_commands.Choice(name="kody-workspace", value="kody-workspace"),
+                discord.app_commands.Choice(name="divebase", value="divebase"),
+                discord.app_commands.Choice(name="bestst", value="bestst"),
+            ],
+            task=thread_task_choices,
+            auto_archive_duration=archive_choices,
+        )
         async def slash_project(
             interaction: discord.Interaction,
             target: str,
             task: str = "",
             message: str = "",
-            auto_archive_duration: int = 10080,
+            auto_archive_duration: int = 0,
         ):
             await _run_preset_thread_slash(
                 interaction,
@@ -3247,20 +3274,24 @@ class DiscordAdapter(BasePlatformAdapter):
         @tree.command(name="side-project", description="Create an anchored side-project thread and start a Hermes session in it")
         @discord.app_commands.describe(
             target="Side-project preset",
-            task="Optional task suffix for the thread name, e.g. experiment",
-            message="Optional initial request to append after the preset starter",
-            auto_archive_duration="Auto-archive in minutes (60, 1440, 4320, 10080; default 10080)",
+            task="Lifecycle mode for the new thread",
+            message="Optional initial request / seed note to append after the preset starter",
+            auto_archive_duration="Auto-archive duration; choose auto to derive it from task mode",
         )
-        @discord.app_commands.choices(target=[
-            discord.app_commands.Choice(name="honbabseoul", value="honbabseoul"),
-            discord.app_commands.Choice(name="nexus", value="nexus"),
-        ])
+        @discord.app_commands.choices(
+            target=[
+                discord.app_commands.Choice(name="honbabseoul", value="honbabseoul"),
+                discord.app_commands.Choice(name="nexus", value="nexus"),
+            ],
+            task=thread_task_choices,
+            auto_archive_duration=archive_choices,
+        )
         async def slash_side_project(
             interaction: discord.Interaction,
             target: str,
             task: str = "",
             message: str = "",
-            auto_archive_duration: int = 10080,
+            auto_archive_duration: int = 0,
         ):
             await _run_preset_thread_slash(
                 interaction,
@@ -3274,22 +3305,26 @@ class DiscordAdapter(BasePlatformAdapter):
         @tree.command(name="kamill", description="Create a Kamill coordination thread and start a Hermes session in it")
         @discord.app_commands.describe(
             target="Kamill coordination preset",
-            task="Optional task suffix for the thread name, e.g. gateway-health",
-            message="Optional initial request to append after the preset starter",
-            auto_archive_duration="Auto-archive in minutes (60, 1440, 4320, 10080; default 10080)",
+            task="Lifecycle mode for the new thread",
+            message="Optional initial request / seed note to append after the preset starter",
+            auto_archive_duration="Auto-archive duration; choose auto to derive it from task mode",
         )
-        @discord.app_commands.choices(target=[
-            discord.app_commands.Choice(name="general", value="general"),
-            discord.app_commands.Choice(name="ops", value="kamill-ops"),
-            discord.app_commands.Choice(name="forge", value="kamill-forge"),
-            discord.app_commands.Choice(name="init", value="kamill-init"),
-        ])
+        @discord.app_commands.choices(
+            target=[
+                discord.app_commands.Choice(name="general", value="general"),
+                discord.app_commands.Choice(name="ops", value="kamill-ops"),
+                discord.app_commands.Choice(name="forge", value="kamill-forge"),
+                discord.app_commands.Choice(name="init", value="kamill-init"),
+            ],
+            task=thread_task_choices,
+            auto_archive_duration=archive_choices,
+        )
         async def slash_kamill(
             interaction: discord.Interaction,
             target: str,
             task: str = "",
             message: str = "",
-            auto_archive_duration: int = 10080,
+            auto_archive_duration: int = 0,
         ):
             await _run_preset_thread_slash(
                 interaction,
@@ -3803,13 +3838,36 @@ Reply to me in Korean.""",
     _THREAD_TITLE_MAX = 100
     _THREAD_TITLE_SUFFIX_MAX = 60
     _THREAD_TITLE_SEPARATOR = " · "
+    _THREAD_TASK_MODE_GUIDANCE: Dict[str, str] = {
+        "intake": "Clarify the idea, classify the destination, and prepare a promotion path before implementation.",
+        "seed": "Crystallize the request into an Ouroboros-style Seed Candidate with explicit acceptance criteria.",
+        "plan": "Decompose the work, identify prerequisites and risks, and avoid implementation until the plan is clear.",
+        "execute": "Perform the approved scoped work, verify it, and report a concrete closeout.",
+        "review": "Inspect the relevant diff, PR, artifact, or decision and return actionable findings.",
+        "ops": "Handle runtime, gateway, auth, provider, config, or workflow operations with explicit mutation boundaries.",
+        "incident": "Diagnose the failure, preserve evidence, recover safely, and state residual risk.",
+        "archive": "Summarize, close out, extract durable lessons, and identify any follow-up destination.",
+    }
+    _THREAD_TASK_MODE_DEFAULT_ARCHIVE: Dict[str, int] = {
+        "intake": 4320,
+        "seed": 4320,
+        "plan": 4320,
+        "execute": 10080,
+        "review": 4320,
+        "ops": 10080,
+        "incident": 10080,
+        "archive": 1440,
+    }
 
     def _build_preset_thread(self, target: str, task: str = "", message: str = "") -> Tuple[str, str]:
         """Return the thread name and starter prompt for a preset Discord thread.
 
         The preset name stays as the stable prefix, while an explicit ``task``
-        or the optional initial request supplies a short, human-readable suffix
-        so multiple threads for the same repo are distinguishable at a glance.
+        mode or the optional initial request supplies a short, human-readable
+        suffix so multiple threads for the same repo are distinguishable at a
+        glance. Known task modes also append lifecycle guidance to the starter
+        prompt so the slash option changes how the session starts, not just the
+        title.
         """
         key = (target or "").strip().lower()
         preset = self._THREAD_PRESETS.get(key)
@@ -3822,10 +3880,31 @@ Reply to me in Korean.""",
         name = self._format_preset_thread_name(base_name, suffix)
 
         starter = preset["starter"].strip()
+        task_mode = (task or "").strip().lower()
+        task_guidance = self._THREAD_TASK_MODE_GUIDANCE.get(task_mode)
+        if task_guidance:
+            starter = f"{starter}\n\nTask mode: {task_mode}\n{task_guidance}"
         extra = (message or "").strip()
         if extra:
             starter = f"{starter}\n\nInitial request:\n{extra}"
         return name, starter
+
+    @classmethod
+    def _resolve_thread_auto_archive_duration(cls, task: str = "", requested: int = 0) -> int:
+        """Resolve Discord auto-archive minutes for preset slash threads.
+
+        ``0`` means "auto" in the slash picker. Known lifecycle task modes map
+        to a sensible default; unknown/free-text task labels preserve the prior
+        long-lived thread default. Explicit valid Discord durations always win.
+        """
+        try:
+            requested_int = int(requested or 0)
+        except (TypeError, ValueError):
+            requested_int = 0
+        if requested_int in VALID_THREAD_AUTO_ARCHIVE_MINUTES:
+            return requested_int
+        task_mode = (task or "").strip().lower()
+        return cls._THREAD_TASK_MODE_DEFAULT_ARCHIVE.get(task_mode, 10080)
 
     @classmethod
     def _format_preset_thread_name(cls, base_name: str, suffix: str = "") -> str:

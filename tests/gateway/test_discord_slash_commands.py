@@ -115,30 +115,42 @@ def adapter():
 
 
 # ------------------------------------------------------------------
-# /thread slash command registration
+# preset thread slash command registration
 # ------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_registers_native_thread_slash_command(adapter):
-    # The /thread slash closure now delegates ALL the work — including
-    # defer() — to _handle_thread_create_slash so the auth gate can send
-    # an ephemeral rejection on the still-unresponded interaction. The
-    # closure should just forward.
+    # Preset slash closures build the target/thread starter, resolve "auto"
+    # archive duration from the task mode, and then delegate ALL thread work —
+    # including defer() — to _handle_thread_create_slash so the auth gate can
+    # send an ephemeral rejection on the still-unresponded interaction.
     adapter._handle_thread_create_slash = AsyncMock()
     adapter._register_slash_commands()
 
-    command = adapter._client.tree.commands["thread"]
+    command = adapter._client.tree.commands["project"]
     interaction = SimpleNamespace(
         response=SimpleNamespace(defer=AsyncMock()),
     )
 
-    await command(interaction, name="Planning", message="", auto_archive_duration=1440)
+    await command(
+        interaction,
+        target="divebase",
+        task="seed",
+        message="Turn the release checklist into acceptance criteria.",
+        auto_archive_duration=0,
+    )
 
     # defer is now performed inside _handle_thread_create_slash, AFTER the
     # auth check passes — not by the closure.
     interaction.response.defer.assert_not_awaited()
-    adapter._handle_thread_create_slash.assert_awaited_once_with(interaction, "Planning", "", 1440)
+    args, kwargs = adapter._handle_thread_create_slash.await_args
+    assert args[0] is interaction
+    assert args[1] == "divebase · seed"
+    assert "Task mode: seed" in args[2]
+    assert "Initial request:\nTurn the release checklist" in args[2]
+    assert args[3] == 4320
+    assert kwargs == {"command_name": "/project"}
 
 
 @pytest.mark.asyncio
@@ -300,7 +312,8 @@ async def test_plugin_command_name_conflict_skipped(adapter):
 @pytest.mark.asyncio
 async def test_handle_thread_create_slash_reports_success(adapter):
     created_thread = SimpleNamespace(id=555, name="Planning", send=AsyncMock())
-    parent_channel = SimpleNamespace(create_thread=AsyncMock(return_value=created_thread), send=AsyncMock())
+    seed_message = SimpleNamespace(id=777, create_thread=AsyncMock(return_value=created_thread))
+    parent_channel = SimpleNamespace(create_thread=AsyncMock(), send=AsyncMock(return_value=seed_message))
     interaction_channel = SimpleNamespace(parent=parent_channel)
     interaction = SimpleNamespace(
         channel=interaction_channel,
@@ -310,15 +323,21 @@ async def test_handle_thread_create_slash_reports_success(adapter):
         followup=SimpleNamespace(send=AsyncMock()),
         response=SimpleNamespace(defer=AsyncMock()),
     )
+    adapter._dispatch_thread_session = AsyncMock()
 
     await adapter._handle_thread_create_slash(interaction, "Planning", "Kickoff", 1440)
 
-    parent_channel.create_thread.assert_awaited_once_with(
+    parent_channel.send.assert_awaited_once_with("🧵 Kamill thread: **Planning**")
+    seed_message.create_thread.assert_awaited_once_with(
         name="Planning",
         auto_archive_duration=1440,
-        reason="Requested by Jezza via /thread",
+        reason="Requested by Jezza via /project",
     )
-    created_thread.send.assert_awaited_once_with("Kickoff")
+    parent_channel.create_thread.assert_not_awaited()
+    created_thread.send.assert_not_awaited()
+    adapter._dispatch_thread_session.assert_awaited_once_with(
+        interaction, "555", "Planning", "Kickoff"
+    )
     # Thread link shown to user
     interaction.followup.send.assert_awaited()
     args, kwargs = interaction.followup.send.await_args
@@ -330,7 +349,8 @@ async def test_handle_thread_create_slash_reports_success(adapter):
 async def test_handle_thread_create_slash_dispatches_session_when_message_provided(adapter):
     """When a message is given, _dispatch_thread_session should be called."""
     created_thread = SimpleNamespace(id=555, name="Planning", send=AsyncMock())
-    parent_channel = SimpleNamespace(create_thread=AsyncMock(return_value=created_thread))
+    seed_message = SimpleNamespace(id=777, create_thread=AsyncMock(return_value=created_thread))
+    parent_channel = SimpleNamespace(create_thread=AsyncMock(), send=AsyncMock(return_value=seed_message))
     interaction = SimpleNamespace(
         channel=SimpleNamespace(parent=parent_channel),
         channel_id=123,
@@ -353,7 +373,8 @@ async def test_handle_thread_create_slash_dispatches_session_when_message_provid
 async def test_handle_thread_create_slash_no_dispatch_without_message(adapter):
     """Without a message, no session dispatch should occur."""
     created_thread = SimpleNamespace(id=555, name="Planning", send=AsyncMock())
-    parent_channel = SimpleNamespace(create_thread=AsyncMock(return_value=created_thread))
+    seed_message = SimpleNamespace(id=777, create_thread=AsyncMock(return_value=created_thread))
+    parent_channel = SimpleNamespace(create_thread=AsyncMock(), send=AsyncMock(return_value=seed_message))
     interaction = SimpleNamespace(
         channel=SimpleNamespace(parent=parent_channel),
         channel_id=123,
@@ -371,11 +392,11 @@ async def test_handle_thread_create_slash_no_dispatch_without_message(adapter):
 
 
 @pytest.mark.asyncio
-async def test_handle_thread_create_slash_falls_back_to_seed_message(adapter):
+async def test_handle_thread_create_slash_uses_seed_message_anchor(adapter):
     created_thread = SimpleNamespace(id=555, name="Planning")
     seed_message = SimpleNamespace(id=777, create_thread=AsyncMock(return_value=created_thread))
     channel = SimpleNamespace(
-        create_thread=AsyncMock(side_effect=RuntimeError("direct failed")),
+        create_thread=AsyncMock(),
         send=AsyncMock(return_value=seed_message),
     )
     interaction = SimpleNamespace(
@@ -389,12 +410,13 @@ async def test_handle_thread_create_slash_falls_back_to_seed_message(adapter):
 
     await adapter._handle_thread_create_slash(interaction, "Planning", "Kickoff", 1440)
 
-    channel.send.assert_awaited_once_with("Kickoff")
+    channel.send.assert_awaited_once_with("🧵 Kamill thread: **Planning**")
     seed_message.create_thread.assert_awaited_once_with(
         name="Planning",
         auto_archive_duration=1440,
-        reason="Requested by Jezza via /thread",
+        reason="Requested by Jezza via /project",
     )
+    channel.create_thread.assert_not_awaited()
     interaction.followup.send.assert_awaited()
 
 
