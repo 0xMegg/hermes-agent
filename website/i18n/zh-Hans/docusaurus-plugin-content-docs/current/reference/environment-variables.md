@@ -259,6 +259,8 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 | `DISCORD_HOME_CHANNEL` | cron 投递的默认 Discord 频道 |
 | `DISCORD_HOME_CHANNEL_NAME` | Discord 主频道的显示名称 |
 | `DISCORD_COMMAND_SYNC_POLICY` | Discord 斜杠命令启动同步策略：`safe`（差异对比并协调）、`bulk`（旧版 `tree.sync()`）或 `off` |
+| `DISCORD_COMMAND_SYNC_ALLOW_RECREATE` | 为 `true` 时，safe 同步可删除并重建无法通过补丁更新的已变更 Discord 斜杠命令。默认：`false`，以避免命令 ID 抖动。 |
+| `DISCORD_COMMAND_SYNC_ALLOW_DELETE` | 为 `true` 时，safe 同步可删除当前构建未知的现有 Discord 斜杠命令。默认：`false`，以便在插件/核心适配器切换和分支切换时保留命令。 |
 | `DISCORD_REQUIRE_MENTION` | 在服务器频道中响应前要求 @mention |
 | `DISCORD_FREE_RESPONSE_CHANNELS` | 不需要 mention 的逗号分隔频道 ID |
 | `DISCORD_AUTO_THREAD` | 支持时自动将长回复转为线程 |

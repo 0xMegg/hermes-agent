@@ -973,7 +973,15 @@ class DiscordAdapter(BasePlatformAdapter):
                 for command in tree.get_commands()
             ]
         desired.sort(key=lambda item: (item.get("type", 1), item.get("name", "")))
-        payload = json.dumps(desired, sort_keys=True, separators=(",", ":"))
+        payload = json.dumps(
+            {
+                "allow_delete": self._allow_discord_command_delete(),
+                "allow_recreate": self._allow_discord_command_recreate(),
+                "commands": desired,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     def _command_sync_skip_reason(self, app_id: Any, fingerprint: str) -> Optional[str]:
@@ -1182,6 +1190,16 @@ class DiscordAdapter(BasePlatformAdapter):
             )
         return "safe"
 
+    def _allow_discord_command_recreate(self) -> bool:
+        """Return whether slash-command sync may churn command IDs."""
+        raw = str(os.getenv("DISCORD_COMMAND_SYNC_ALLOW_RECREATE", "") or "").strip().lower()
+        return raw in {"1", "true", "yes", "on"}
+
+    def _allow_discord_command_delete(self) -> bool:
+        """Return whether slash-command sync may remove commands unknown to this build."""
+        raw = str(os.getenv("DISCORD_COMMAND_SYNC_ALLOW_DELETE", "") or "").strip().lower()
+        return raw in {"1", "true", "yes", "on"}
+
     def _canonicalize_app_command_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Reduce command payloads to the semantic fields Hermes manages."""
         contexts = payload.get("contexts")
@@ -1335,17 +1353,32 @@ class DiscordAdapter(BasePlatformAdapter):
                 continue
 
             if self._patchable_app_command_payload(current_existing_payload) == self._patchable_app_command_payload(desired):
-                await mutate(http.delete_global_command, app_id, current.id)
-                await mutate(http.upsert_global_command, app_id, desired)
-                recreated += 1
+                if self._allow_discord_command_recreate():
+                    await mutate(http.delete_global_command, app_id, current.id)
+                    await mutate(http.upsert_global_command, app_id, desired)
+                    recreated += 1
+                    continue
+                logger.warning(
+                    "[%s] Skipping slash command recreate for %s to avoid command-id churn; set DISCORD_COMMAND_SYNC_ALLOW_RECREATE=true to allow",
+                    self.name,
+                    desired_payload["name"],
+                )
+                unchanged += 1
                 continue
 
             await mutate(http.edit_global_command, app_id, current.id, desired)
             updated += 1
 
         for current in existing_by_key.values():
-            await mutate(http.delete_global_command, app_id, current.id)
-            deleted += 1
+            if self._allow_discord_command_delete():
+                await mutate(http.delete_global_command, app_id, current.id)
+                deleted += 1
+                continue
+            logger.warning(
+                "[%s] Skipping slash command delete for %s to avoid removing commands unknown to this build; set DISCORD_COMMAND_SYNC_ALLOW_DELETE=true to allow",
+                self.name,
+                getattr(current, "name", "<unknown>"),
+            )
 
         return {
             "total": len(desired_payloads),
