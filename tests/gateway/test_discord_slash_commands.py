@@ -43,9 +43,23 @@ def _ensure_discord_mock():
                 self.callback = callback
                 self.parent = parent
 
+        def _record_descriptions(**kwargs):
+            def decorator(fn):
+                fn.__discord_descriptions__ = kwargs
+                return fn
+
+            return decorator
+
+        def _record_choices(**kwargs):
+            def decorator(fn):
+                fn.__discord_choices__ = kwargs
+                return fn
+
+            return decorator
+
         discord_mod.app_commands = SimpleNamespace(
-            describe=lambda **kwargs: (lambda fn: fn),
-            choices=lambda **kwargs: (lambda fn: fn),
+            describe=_record_descriptions,
+            choices=_record_choices,
             autocomplete=lambda **kwargs: (lambda fn: fn),
             Choice=lambda **kwargs: SimpleNamespace(**kwargs),
             Group=_FakeGroup,
@@ -66,9 +80,26 @@ def _ensure_discord_mock():
     # need onto discord.app_commands — the flat /skill command uses
     # @app_commands.autocomplete and not every other mock stub exposes it.
     _app = getattr(sys.modules["discord"], "app_commands", None)
-    if _app is not None and not hasattr(_app, "autocomplete"):
+    if _app is not None:
+        def _record_descriptions(**kwargs):
+            def decorator(fn):
+                fn.__discord_descriptions__ = kwargs
+                return fn
+
+            return decorator
+
+        def _record_choices(**kwargs):
+            def decorator(fn):
+                fn.__discord_choices__ = kwargs
+                return fn
+
+            return decorator
+
         try:
-            _app.autocomplete = lambda **kwargs: (lambda fn: fn)
+            _app.describe = _record_descriptions
+            _app.choices = _record_choices
+            if not hasattr(_app, "autocomplete"):
+                _app.autocomplete = lambda **kwargs: (lambda fn: fn)
         except Exception:
             pass
 
@@ -155,6 +186,106 @@ async def test_registers_native_restart_slash_command(adapter):
         interaction,
         "/restart",
         "Restart requested~",
+    )
+
+
+def _choice_values(command, option_name):
+    choices = getattr(command, "__discord_choices__", {})
+    return [choice.value for choice in choices[option_name]]
+
+
+def test_registers_preset_thread_slash_commands_with_expected_choices(adapter):
+    adapter._register_slash_commands()
+
+    tree = adapter._client.tree.commands
+    assert {"project", "side-project", "kamill"}.issubset(tree)
+
+    assert _choice_values(tree["project"], "target") == [
+        "kody-workspace",
+        "divebase",
+        "bestst",
+    ]
+    assert _choice_values(tree["side-project"], "target") == [
+        "honbabseoul",
+        "nexus",
+    ]
+    assert _choice_values(tree["kamill"], "target") == [
+        "general",
+        "kamill-ops",
+        "kamill-forge",
+        "kamill-init",
+    ]
+
+    expected_task_modes = [
+        "intake",
+        "seed",
+        "plan",
+        "execute",
+        "review",
+        "ops",
+        "incident",
+        "archive",
+    ]
+    expected_archive_options = [0, 60, 1440, 4320, 10080]
+    for command_name in ["project", "side-project", "kamill"]:
+        assert _choice_values(tree[command_name], "task") == expected_task_modes
+        assert _choice_values(tree[command_name], "auto_archive_duration") == expected_archive_options
+
+
+@pytest.mark.asyncio
+async def test_preset_thread_slash_commands_forward_to_preset_runner(adapter):
+    adapter._run_preset_thread_slash = AsyncMock()
+    adapter._register_slash_commands()
+    interaction = SimpleNamespace()
+
+    await adapter._client.tree.commands["project"](
+        interaction,
+        target="kody-workspace",
+        task="seed",
+        message="Draft acceptance criteria",
+        auto_archive_duration=0,
+    )
+    adapter._run_preset_thread_slash.assert_awaited_once_with(
+        interaction,
+        command_name="project",
+        target="kody-workspace",
+        task="seed",
+        message="Draft acceptance criteria",
+        auto_archive_duration=0,
+    )
+
+    adapter._run_preset_thread_slash.reset_mock()
+    await adapter._client.tree.commands["side-project"](
+        interaction,
+        target="nexus",
+        task="plan",
+        message="",
+        auto_archive_duration=4320,
+    )
+    adapter._run_preset_thread_slash.assert_awaited_once_with(
+        interaction,
+        command_name="side-project",
+        target="nexus",
+        task="plan",
+        message="",
+        auto_archive_duration=4320,
+    )
+
+    adapter._run_preset_thread_slash.reset_mock()
+    await adapter._client.tree.commands["kamill"](
+        interaction,
+        target="kamill-ops",
+        task="incident",
+        message="Gateway health check",
+        auto_archive_duration=60,
+    )
+    adapter._run_preset_thread_slash.assert_awaited_once_with(
+        interaction,
+        command_name="kamill",
+        target="kamill-ops",
+        task="incident",
+        message="Gateway health check",
+        auto_archive_duration=60,
     )
 
 
@@ -450,6 +581,86 @@ async def test_dispatch_thread_session_builds_thread_event(adapter):
     assert event.source.chat_type == "thread"
     assert event.source.thread_id == "555"
     assert "TestGuild" in event.source.chat_name
+
+
+@pytest.mark.asyncio
+async def test_run_preset_thread_slash_uses_seed_anchor_and_dispatches_starter(adapter):
+    interaction = SimpleNamespace(
+        channel=SimpleNamespace(name="ops"),
+        channel_id=123,
+        user=SimpleNamespace(display_name="Jezza", name="Jezza", id=42),
+        guild=SimpleNamespace(name="TestGuild", id=99),
+        followup=SimpleNamespace(send=AsyncMock()),
+        response=SimpleNamespace(defer=AsyncMock()),
+    )
+    adapter._create_thread = AsyncMock(return_value={
+        "success": True,
+        "thread_id": "777",
+        "thread_name": "Kamill Ops · incident",
+    })
+    adapter._dispatch_thread_session = AsyncMock()
+    adapter._threads = SimpleNamespace(mark=MagicMock())
+
+    await adapter._run_preset_thread_slash(
+        interaction,
+        command_name="kamill",
+        target="kamill-ops",
+        task="incident",
+        message="Gateway is wedged after restart",
+        auto_archive_duration=0,
+    )
+
+    interaction.response.defer.assert_awaited_once_with(ephemeral=True)
+    adapter._create_thread.assert_awaited_once()
+    assert adapter._create_thread.await_args is not None
+    create_kwargs = adapter._create_thread.await_args.kwargs
+    assert create_kwargs["name"].startswith("kamill-ops · incident")
+    assert create_kwargs["auto_archive_duration"] == 10080
+    assert create_kwargs["post_initial_message"] is False
+    assert create_kwargs["command_name"] == "/kamill"
+    assert create_kwargs["seed_message"].startswith("🧵 Kamill thread: **kamill-ops")
+    starter = create_kwargs["message"]
+    assert "This thread is for Kamill/Hermes operations." in starter
+    assert "Task mode: incident" in starter
+    assert "Gateway is wedged after restart" in starter
+    interaction.followup.send.assert_awaited_once_with("Created thread <#777>", ephemeral=True)
+    adapter._threads.mark.assert_called_once_with("777")
+    adapter._dispatch_thread_session.assert_awaited_once_with(
+        interaction,
+        "777",
+        "Kamill Ops · incident",
+        starter,
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_preset_thread_slash_reports_unknown_preset_without_creating_thread(adapter):
+    interaction = SimpleNamespace(
+        channel=SimpleNamespace(name="ops"),
+        channel_id=123,
+        user=SimpleNamespace(display_name="Jezza", name="Jezza", id=42),
+        guild=SimpleNamespace(name="TestGuild", id=99),
+        followup=SimpleNamespace(send=AsyncMock()),
+        response=SimpleNamespace(defer=AsyncMock()),
+    )
+    adapter._create_thread = AsyncMock()
+
+    await adapter._run_preset_thread_slash(
+        interaction,
+        command_name="project",
+        target="unknown-project",
+        task="seed",
+        message="",
+        auto_archive_duration=0,
+    )
+
+    interaction.response.defer.assert_awaited_once_with(ephemeral=True)
+    adapter._create_thread.assert_not_awaited()
+    interaction.followup.send.assert_awaited_once()
+    args, kwargs = interaction.followup.send.await_args
+    assert "Failed to prepare thread preset" in args[0]
+    assert "unknown-project" in args[0]
+    assert kwargs["ephemeral"] is True
 
 
 # ------------------------------------------------------------------
