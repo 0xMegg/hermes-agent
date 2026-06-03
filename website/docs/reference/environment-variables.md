@@ -259,6 +259,8 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `DISCORD_HOME_CHANNEL` | Default Discord channel for cron delivery |
 | `DISCORD_HOME_CHANNEL_NAME` | Display name for the Discord home channel |
 | `DISCORD_COMMAND_SYNC_POLICY` | Discord slash-command startup sync policy: `safe` (diff and reconcile), `bulk` (legacy `tree.sync()`), or `off` |
+| `DISCORD_COMMAND_SYNC_ALLOW_RECREATE` | When `true`, safe sync may delete/recreate changed Discord slash commands whose fields cannot be patched. Default: `false` to avoid command ID churn. |
+| `DISCORD_COMMAND_SYNC_ALLOW_DELETE` | When `true`, safe sync may delete existing Discord slash commands unknown to the current build. Default: `false` to preserve commands across plugin/core adapter switches and branch changes. |
 | `DISCORD_REQUIRE_MENTION` | Require an @mention before responding in server channels |
 | `DISCORD_FREE_RESPONSE_CHANNELS` | Comma-separated channel IDs where mention is not required |
 | `DISCORD_AUTO_THREAD` | Auto-thread long replies when supported |
