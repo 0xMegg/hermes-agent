@@ -1,0 +1,64 @@
+# Kamill overlay manifest
+#
+# Purpose: local Kamill-specific behavior that must survive Hermes upstream
+# updates/rebases.  After `hermes update` or an upstream rebase, run the
+# regression command below before restarting the Discord gateway.
+
+regression_command: >-
+  uv run pytest -o addopts='' tests/tools/test_approval.py::TestApprovalTimeoutIsNotConsent tests/tools/test_execute_code_approval_cluster.py::test_guard_gateway_timeout_blocks tests/gateway/test_discord_approval_dm.py tests/gateway/test_discord_slash_auth.py tests/gateway/test_discord_slash_commands.py tests/gateway/test_discord_connect.py -q
+
+entries:
+  - id: kamill.discord.preset-thread-slash
+    status: restored
+    files:
+      - plugins/platforms/discord/adapter.py
+      - tests/gateway/test_discord_slash_commands.py
+    contract:
+      - Discord exposes Kamill preset thread commands such as /project, /side-project, and /kamill.
+      - Preset commands route through the same authorization gates as on_message.
+
+  - id: kamill.discord.safe-command-sync
+    status: restored
+    files:
+      - plugins/platforms/discord/adapter.py
+      - tests/gateway/test_discord_connect.py
+      - website/docs/user-guide/messaging/discord.md
+      - website/docs/reference/environment-variables.md
+    contract:
+      - Discord command sync defaults to a safe policy that does not delete/recreate commands unnecessarily.
+      - Bulk destructive sync requires explicit policy selection.
+
+  - id: kamill.approval.timeout-fail-closed
+    status: present
+    files:
+      - tools/approval.py
+      - tests/tools/test_approval.py
+      - tests/tools/test_execute_code_approval_cluster.py
+    contract:
+      - Gateway approval timeout returns approved=false, user_consent=false, outcome=timeout.
+      - Model-facing message says BLOCKED and Silence is not consent.
+      - Timeout/deny must not be converted into approval_required or retriable work.
+
+  - id: kamill.discord.approval-dm-mirror
+    status: restored
+    files:
+      - plugins/platforms/discord/adapter.py
+      - tests/gateway/test_discord_approval_dm.py
+    contract:
+      - Discord dangerous-command approval is posted to the original channel/thread.
+      - The same approval is mirrored best-effort to numeric DISCORD_ALLOWED_USERS via DM.
+      - DM failure does not remove or fail the original channel/thread prompt.
+      - DM buttons share the same session_key, so either prompt resolves the same pending approval.
+
+  - id: kamill.forge.mutation-gate
+    status: monitor
+    contract:
+      - Kamill config/auth/gateway/memory/skills/repo mutations require explicit human approval.
+      - Non-mutating Seed Candidates are allowed; humans promote active Seeds/Lineages.
+
+update_playbook:
+  - Capture pre-update branch/status and backup path provenance.
+  - Rebase or port upstream changes onto the Kamill branch; do not overwrite local overlay files blindly.
+  - Run the regression_command from this manifest.
+  - If Discord adapter changed upstream, inspect approval, slash-command, and command-sync sections manually.
+  - Restart the gateway only after tests pass or after recording a known failing test with a concrete rollback/repair plan.
