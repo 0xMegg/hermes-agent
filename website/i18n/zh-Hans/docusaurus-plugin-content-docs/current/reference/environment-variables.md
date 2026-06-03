@@ -252,13 +252,15 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 | `TELEGRAM_IGNORED_THREADS` | bot 永不响应的逗号分隔 Telegram 论坛话题/线程 ID |
 | `TELEGRAM_PROXY` | Telegram 连接的代理 URL——覆盖 `HTTPS_PROXY`。支持 `http://`、`https://`、`socks5://` |
 | `DISCORD_BOT_TOKEN` | Discord bot token |
-| `DISCORD_ALLOWED_USERS` | 允许使用 bot 的逗号分隔 Discord 用户 ID |
-| `DISCORD_ALLOWED_ROLES` | 允许使用 bot 的逗号分隔 Discord 角色 ID（与 `DISCORD_ALLOWED_USERS` 取 OR）。自动启用 Members intent。适用于管理团队频繁变动的场景——角色授权自动传播。 |
+| `DISCORD_ALLOWED_USERS` | 允许使用 bot 的逗号分隔 Discord 用户 ID。危险命令审批提示会尽力通过 DM 镜像发送给这些数字用户 ID。 |
+| `DISCORD_ALLOWED_ROLES` | 允许使用 bot 的逗号分隔 Discord 角色 ID（与 `DISCORD_ALLOWED_USERS` 取 OR）。自动启用 Members intent。适用于管理团队频繁变动的场景——角色授权自动传播。当前 DM 镜像实现只发送给显式列在 `DISCORD_ALLOWED_USERS` 中的用户；仅角色授权仍可用于交互，但不会新增 DM 镜像接收者。 |
 | `DISCORD_ALLOWED_CHANNELS` | 逗号分隔的 Discord 频道 ID。设置后，bot 仅在这些频道（以及允许的私聊）中响应。覆盖 `config.yaml` 中的 `discord.allowed_channels`。 |
 | `DISCORD_PROXY` | Discord 连接的代理 URL——覆盖 `HTTPS_PROXY`。支持 `http://`、`https://`、`socks5://` |
 | `DISCORD_HOME_CHANNEL` | cron 投递的默认 Discord 频道 |
 | `DISCORD_HOME_CHANNEL_NAME` | Discord 主频道的显示名称 |
 | `DISCORD_COMMAND_SYNC_POLICY` | Discord 斜杠命令启动同步策略：`safe`（差异对比并协调）、`bulk`（旧版 `tree.sync()`）或 `off` |
+| `DISCORD_COMMAND_SYNC_ALLOW_RECREATE` | 为 `true` 时，safe 同步可删除并重建无法通过补丁更新的已变更 Discord 斜杠命令。默认：`false`，以避免命令 ID 抖动。 |
+| `DISCORD_COMMAND_SYNC_ALLOW_DELETE` | 为 `true` 时，safe 同步可删除当前构建未知的现有 Discord 斜杠命令。默认：`false`，以便在插件/核心适配器切换和分支切换时保留命令。 |
 | `DISCORD_REQUIRE_MENTION` | 在服务器频道中响应前要求 @mention |
 | `DISCORD_FREE_RESPONSE_CHANNELS` | 不需要 mention 的逗号分隔频道 ID |
 | `DISCORD_AUTO_THREAD` | 支持时自动将长回复转为线程 |

@@ -973,7 +973,15 @@ class DiscordAdapter(BasePlatformAdapter):
                 for command in tree.get_commands()
             ]
         desired.sort(key=lambda item: (item.get("type", 1), item.get("name", "")))
-        payload = json.dumps(desired, sort_keys=True, separators=(",", ":"))
+        payload = json.dumps(
+            {
+                "allow_delete": self._allow_discord_command_delete(),
+                "allow_recreate": self._allow_discord_command_recreate(),
+                "commands": desired,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     def _command_sync_skip_reason(self, app_id: Any, fingerprint: str) -> Optional[str]:
@@ -1182,6 +1190,16 @@ class DiscordAdapter(BasePlatformAdapter):
             )
         return "safe"
 
+    def _allow_discord_command_recreate(self) -> bool:
+        """Return whether slash-command sync may churn command IDs."""
+        raw = str(os.getenv("DISCORD_COMMAND_SYNC_ALLOW_RECREATE", "") or "").strip().lower()
+        return raw in {"1", "true", "yes", "on"}
+
+    def _allow_discord_command_delete(self) -> bool:
+        """Return whether slash-command sync may remove commands unknown to this build."""
+        raw = str(os.getenv("DISCORD_COMMAND_SYNC_ALLOW_DELETE", "") or "").strip().lower()
+        return raw in {"1", "true", "yes", "on"}
+
     def _canonicalize_app_command_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Reduce command payloads to the semantic fields Hermes manages."""
         contexts = payload.get("contexts")
@@ -1335,17 +1353,32 @@ class DiscordAdapter(BasePlatformAdapter):
                 continue
 
             if self._patchable_app_command_payload(current_existing_payload) == self._patchable_app_command_payload(desired):
-                await mutate(http.delete_global_command, app_id, current.id)
-                await mutate(http.upsert_global_command, app_id, desired)
-                recreated += 1
+                if self._allow_discord_command_recreate():
+                    await mutate(http.delete_global_command, app_id, current.id)
+                    await mutate(http.upsert_global_command, app_id, desired)
+                    recreated += 1
+                    continue
+                logger.warning(
+                    "[%s] Skipping slash command recreate for %s to avoid command-id churn; set DISCORD_COMMAND_SYNC_ALLOW_RECREATE=true to allow",
+                    self.name,
+                    desired_payload["name"],
+                )
+                unchanged += 1
                 continue
 
             await mutate(http.edit_global_command, app_id, current.id, desired)
             updated += 1
 
         for current in existing_by_key.values():
-            await mutate(http.delete_global_command, app_id, current.id)
-            deleted += 1
+            if self._allow_discord_command_delete():
+                await mutate(http.delete_global_command, app_id, current.id)
+                deleted += 1
+                continue
+            logger.warning(
+                "[%s] Skipping slash command delete for %s to avoid removing commands unknown to this build; set DISCORD_COMMAND_SYNC_ALLOW_DELETE=true to allow",
+                self.name,
+                getattr(current, "name", "<unknown>"),
+            )
 
         return {
             "total": len(desired_payloads),
@@ -3102,6 +3135,120 @@ class DiscordAdapter(BasePlatformAdapter):
             # so a rejected invoker can receive an ephemeral rejection.
             await self._handle_thread_create_slash(interaction, name, message, auto_archive_duration)
 
+        thread_task_choices = [
+            discord.app_commands.Choice(name="intake — classify and route unclear work", value="intake"),
+            discord.app_commands.Choice(name="seed — draft Seed Candidate and acceptance criteria", value="seed"),
+            discord.app_commands.Choice(name="plan — decompose before implementation", value="plan"),
+            discord.app_commands.Choice(name="execute — implement or perform the work", value="execute"),
+            discord.app_commands.Choice(name="review — inspect diff/PR/artifact", value="review"),
+            discord.app_commands.Choice(name="ops — runtime/config/auth operations", value="ops"),
+            discord.app_commands.Choice(name="incident — diagnose and recover a failure", value="incident"),
+            discord.app_commands.Choice(name="archive — close out or summarize", value="archive"),
+        ]
+        archive_choices = [
+            discord.app_commands.Choice(name="auto — based on task mode", value=0),
+            discord.app_commands.Choice(name="1 hour", value=60),
+            discord.app_commands.Choice(name="24 hours", value=1440),
+            discord.app_commands.Choice(name="3 days", value=4320),
+            discord.app_commands.Choice(name="7 days", value=10080),
+        ]
+
+        @tree.command(name="project", description="Create an anchored main-project thread and start a Hermes session in it")
+        @discord.app_commands.describe(
+            target="Project preset",
+            task="Lifecycle mode for the new thread",
+            message="Optional initial request / seed note to append after the preset starter",
+            auto_archive_duration="Auto-archive duration; choose auto to derive it from task mode",
+        )
+        @discord.app_commands.choices(
+            target=[
+                discord.app_commands.Choice(name="kody-workspace", value="kody-workspace"),
+                discord.app_commands.Choice(name="divebase", value="divebase"),
+                discord.app_commands.Choice(name="bestst", value="bestst"),
+            ],
+            task=thread_task_choices,
+            auto_archive_duration=archive_choices,
+        )
+        async def slash_project(
+            interaction: discord.Interaction,
+            target: str,
+            task: str = "",
+            message: str = "",
+            auto_archive_duration: int = 0,
+        ):
+            await self._run_preset_thread_slash(
+                interaction,
+                command_name="project",
+                target=target,
+                task=task,
+                message=message,
+                auto_archive_duration=auto_archive_duration,
+            )
+
+        @tree.command(name="side-project", description="Create an anchored side-project thread and start a Hermes session in it")
+        @discord.app_commands.describe(
+            target="Side-project preset",
+            task="Lifecycle mode for the new thread",
+            message="Optional initial request / seed note to append after the preset starter",
+            auto_archive_duration="Auto-archive duration; choose auto to derive it from task mode",
+        )
+        @discord.app_commands.choices(
+            target=[
+                discord.app_commands.Choice(name="honbabseoul", value="honbabseoul"),
+                discord.app_commands.Choice(name="nexus", value="nexus"),
+            ],
+            task=thread_task_choices,
+            auto_archive_duration=archive_choices,
+        )
+        async def slash_side_project(
+            interaction: discord.Interaction,
+            target: str,
+            task: str = "",
+            message: str = "",
+            auto_archive_duration: int = 0,
+        ):
+            await self._run_preset_thread_slash(
+                interaction,
+                command_name="side-project",
+                target=target,
+                task=task,
+                message=message,
+                auto_archive_duration=auto_archive_duration,
+            )
+
+        @tree.command(name="kamill", description="Create a Kamill coordination thread and start a Hermes session in it")
+        @discord.app_commands.describe(
+            target="Kamill coordination preset",
+            task="Lifecycle mode for the new thread",
+            message="Optional initial request / seed note to append after the preset starter",
+            auto_archive_duration="Auto-archive duration; choose auto to derive it from task mode",
+        )
+        @discord.app_commands.choices(
+            target=[
+                discord.app_commands.Choice(name="general", value="general"),
+                discord.app_commands.Choice(name="ops", value="kamill-ops"),
+                discord.app_commands.Choice(name="forge", value="kamill-forge"),
+                discord.app_commands.Choice(name="init", value="kamill-init"),
+            ],
+            task=thread_task_choices,
+            auto_archive_duration=archive_choices,
+        )
+        async def slash_kamill(
+            interaction: discord.Interaction,
+            target: str,
+            task: str = "",
+            message: str = "",
+            auto_archive_duration: int = 0,
+        ):
+            await self._run_preset_thread_slash(
+                interaction,
+                command_name="kamill",
+                target=target,
+                task=task,
+                message=message,
+                auto_archive_duration=auto_archive_duration,
+            )
+
         @tree.command(name="queue", description="Queue a prompt for the next turn (doesn't interrupt)")
         @discord.app_commands.describe(prompt="The prompt to queue")
         async def slash_queue(interaction: discord.Interaction, prompt: str):
@@ -3512,6 +3659,255 @@ class DiscordAdapter(BasePlatformAdapter):
     # Thread creation helpers
     # ------------------------------------------------------------------
 
+    _THREAD_PRESETS: Dict[str, Dict[str, str]] = {
+        "general": {
+            "name": "general",
+            "starter": """This thread is for general Kamill conversation.
+
+No repo is anchored by default.
+Do not print secrets, .env contents, auth tokens, or API keys.
+Reply to me in Korean.""",
+        },
+        "kody-workspace": {
+            "name": "kody-workspace",
+            "starter": """This thread is for KODY orchestration root.
+Repo path: /Users/qnb/dev/workouts/kody-workspace
+
+Use this repo for KODY workspace planning, cross-repo gates, routing, closeout, and coordination of kody-frontend/kody-backend work.
+Run product implementation and child-local verification from the target child repo when needed.
+Do not print secrets, .env contents, auth tokens, or API keys.
+Reply to me in Korean.""",
+        },
+        "divebase": {
+            "name": "divebase",
+            "starter": """This thread is for divebase.
+Repo path: /Users/qnb/dev/workouts/divebase
+
+Use this repo as cwd for DiveBase inspection, Flutter analysis, tests, and implementation.
+Do not print secrets, .env contents, auth tokens, or API keys.
+Reply to me in Korean.""",
+        },
+        "honbabseoul": {
+            "name": "honbabseoul",
+            "starter": """This thread is for honbabseoul.
+Repo path: /Users/qnb/dev/workouts/honbabseoul
+
+Use this repo as cwd for repo-specific inspection, tests, and implementation.
+Do not print secrets, .env.local contents, auth tokens, or API keys.
+Reply to me in Korean.""",
+        },
+        "nexus": {
+            "name": "nexus",
+            "starter": """This thread is for nexus.
+Repo path: /Users/qnb/dev/workouts/nexus
+
+Use this repo as cwd for repo-specific inspection, tests, and implementation.
+Do not print secrets, env contents, auth tokens, or API keys.
+Reply to me in Korean.""",
+        },
+        "bestst": {
+            "name": "bestst",
+            "starter": """This thread is for BestST.
+Repo path: /Users/qnb/dev/workouts/bestst
+
+Use this repo as cwd for repo-specific inspection, tests, and implementation.
+Do not print secrets, env contents, auth tokens, or API keys.
+Reply to me in Korean.""",
+        },
+        "kamill-forge": {
+            "name": "kamill-forge",
+            "starter": """This thread is for Kamill Forge: improving Kamill's operating knowledge and self-improvement workflow.
+
+No repo is anchored by default.
+If repo edits, memory changes, skill changes, config changes, gateway changes, or automation are needed, propose the change first and wait for explicit approval.
+Keep proposal, review, approval, and application boundaries clear.
+Do not print secrets, .env contents, auth tokens, or API keys.
+Reply to me in Korean.""",
+        },
+        "kamill-init": {
+            "name": "kamill-init",
+            "starter": """This thread is for Kamill project/init intake.
+
+No repo is anchored by default.
+Use this for pre-project conversation: classify whether an idea is a main project, side project, Kamill Forge item, ops issue, one-off task, or deferred item.
+Do not mutate config, auth, gateway service state, memory, skills, or repos without explicit approval.
+When scope is clear, prepare the destination slash command and anchor message for the promoted thread.
+Do not print secrets, .env contents, auth tokens, or API keys.
+Reply to me in Korean.""",
+        },
+        "kamill-ops": {
+            "name": "kamill-ops",
+            "starter": """This thread is for Kamill/Hermes operations.
+
+No repo is anchored by default.
+Use this for Kamill runtime operations: gateway health, Hermes Agent runtime work, auth recovery, model/provider checks, Discord workflow, thread presets, and operational troubleshooting.
+Project/product work belongs in the appropriate project thread; Kamill self-improvement, memory/skills hygiene, and operating-knowledge refinement belong in kamill-forge.
+Do not mutate config, auth, gateway service state, memory, skills, or repos without explicit approval.
+Do not print secrets, .env contents, auth tokens, or API keys.
+Reply to me in Korean.""",
+        },
+    }
+
+    _THREAD_TITLE_MAX = 100
+    _THREAD_TITLE_SUFFIX_MAX = 60
+    _THREAD_TITLE_SEPARATOR = " · "
+    _THREAD_TASK_MODE_GUIDANCE: Dict[str, str] = {
+        "intake": "Clarify the idea, classify the destination, and prepare a promotion path before implementation.",
+        "seed": "Crystallize the request into an Ouroboros-style Seed Candidate with explicit acceptance criteria.",
+        "plan": "Decompose the work, identify prerequisites and risks, and avoid implementation until the plan is clear.",
+        "execute": "Perform the approved scoped work, verify it, and report a concrete closeout.",
+        "review": "Inspect the relevant diff, PR, artifact, or decision and return actionable findings.",
+        "ops": "Handle runtime, gateway, auth, provider, config, or workflow operations with explicit mutation boundaries.",
+        "incident": "Diagnose the failure, preserve evidence, recover safely, and state residual risk.",
+        "archive": "Summarize, close out, extract durable lessons, and identify any follow-up destination.",
+    }
+    _THREAD_TASK_MODE_DEFAULT_ARCHIVE: Dict[str, int] = {
+        "intake": 4320,
+        "seed": 4320,
+        "plan": 4320,
+        "execute": 10080,
+        "review": 4320,
+        "ops": 10080,
+        "incident": 10080,
+        "archive": 1440,
+    }
+
+    def _build_preset_thread(self, target: str, task: str = "", message: str = "") -> Tuple[str, str]:
+        key = (target or "").strip().lower()
+        preset = self._THREAD_PRESETS.get(key)
+        if not preset:
+            allowed = ", ".join(sorted(self._THREAD_PRESETS))
+            raise ValueError(f"Unknown thread preset '{target}'. Choose one of: {allowed}")
+
+        base_name = preset["name"]
+        suffix = self._summarize_thread_title_suffix(task or message)
+        name = self._format_preset_thread_name(base_name, suffix)
+
+        starter = preset["starter"].strip()
+        task_mode = (task or "").strip().lower()
+        task_guidance = self._THREAD_TASK_MODE_GUIDANCE.get(task_mode)
+        if task_guidance:
+            starter = f"{starter}\n\nTask mode: {task_mode}\n{task_guidance}"
+        extra = (message or "").strip()
+        if extra:
+            starter = f"{starter}\n\nInitial request:\n{extra}"
+        return name, starter
+
+    @classmethod
+    def _resolve_thread_auto_archive_duration(cls, task: str = "", requested: int = 0) -> int:
+        try:
+            requested_int = int(requested or 0)
+        except (TypeError, ValueError):
+            requested_int = 0
+        if requested_int in VALID_THREAD_AUTO_ARCHIVE_MINUTES:
+            return requested_int
+        task_mode = (task or "").strip().lower()
+        return cls._THREAD_TASK_MODE_DEFAULT_ARCHIVE.get(task_mode, 10080)
+
+    @classmethod
+    def _format_preset_thread_name(cls, base_name: str, suffix: str = "") -> str:
+        base = (base_name or "Hermes").strip() or "Hermes"
+        suffix = (suffix or "").strip()
+        if not suffix:
+            return base[: cls._THREAD_TITLE_MAX].rstrip(" -._·") or base
+
+        name = f"{base}{cls._THREAD_TITLE_SEPARATOR}{suffix}"
+        if len(name) <= cls._THREAD_TITLE_MAX:
+            return name
+
+        available = cls._THREAD_TITLE_MAX - len(base) - len(cls._THREAD_TITLE_SEPARATOR)
+        if available < 8:
+            return base[: cls._THREAD_TITLE_MAX].rstrip(" -._·") or base
+        shortened = suffix[: max(0, available - 1)].rstrip(" -._·")
+        return f"{base}{cls._THREAD_TITLE_SEPARATOR}{shortened}…"
+
+    @classmethod
+    def _build_thread_seed_message(cls, thread_name: str) -> str:
+        safe_name = (thread_name or "Kamill thread").strip() or "Kamill thread"
+        safe_name = safe_name[: cls._THREAD_TITLE_MAX].rstrip(" -._·") or "Kamill thread"
+        return f"🧵 Kamill thread: **{safe_name}**"
+
+    @classmethod
+    def _summarize_thread_title_suffix(cls, text: str) -> str:
+        raw = (text or "").strip()
+        if not raw:
+            return ""
+        if re.search(
+            r"(?i)(api[_-]?key|auth[_-]?token|bearer\s+|password|passwd|secret|\.env|sk-[A-Za-z0-9])",
+            raw,
+        ):
+            return ""
+        cleaned = re.sub(r"```.*?```", " ", raw, flags=re.DOTALL)
+        cleaned = re.sub(r"`([^`]*)`", r"\1", cleaned)
+        cleaned = re.sub(r"<@[!&]?\d+>", " ", cleaned)
+        cleaned = re.sub(r"<#\d+>", " ", cleaned)
+        cleaned = re.sub(r"https?://\S+", " link ", cleaned)
+        cleaned = re.sub(r"(?im)^\s*(initial request|request|task|repo path)\s*:\s*", "", cleaned)
+        lines = [re.sub(r"\s+", " ", line).strip(" \t-–—:;,.!?/\\") for line in cleaned.splitlines()]
+        line = next((part for part in lines if part), "")
+        if not line:
+            return ""
+        words = line.split()
+        if len(words) > 8:
+            line = " ".join(words[:8])
+        if len(line) > cls._THREAD_TITLE_SUFFIX_MAX:
+            line = line[: cls._THREAD_TITLE_SUFFIX_MAX - 1].rstrip(" -._·") + "…"
+        return line
+
+    async def _run_preset_thread_slash(
+        self,
+        interaction: discord.Interaction,
+        *,
+        command_name: str,
+        target: str,
+        task: str = "",
+        message: str = "",
+        auto_archive_duration: int = 0,
+    ) -> None:
+        if not await self._check_slash_authorization(interaction, f"/{command_name}"):
+            return
+        await interaction.response.defer(ephemeral=True)
+        try:
+            name, starter = self._build_preset_thread(target, task, message)
+            archive = self._resolve_thread_auto_archive_duration(task, auto_archive_duration)
+        except Exception as exc:
+            await interaction.followup.send(f"Failed to prepare thread preset: {exc}", ephemeral=True)
+            return
+
+        logger.info(
+            "[Discord] /%s invoked target=%s task=%s channel=%s(%s) guild=%s(%s) user=%s(%s) auto_archive=%s message_provided=%s",
+            command_name,
+            target,
+            task,
+            getattr(interaction, "channel_id", ""),
+            getattr(getattr(interaction, "channel", None), "name", ""),
+            getattr(getattr(interaction, "guild", None), "id", ""),
+            getattr(getattr(interaction, "guild", None), "name", ""),
+            getattr(getattr(interaction, "user", None), "id", ""),
+            getattr(getattr(interaction, "user", None), "name", ""),
+            archive,
+            bool((message or "").strip()),
+        )
+        result = await self._create_thread(
+            interaction,
+            name=name,
+            message=starter,
+            auto_archive_duration=archive,
+            seed_message=self._build_thread_seed_message(name),
+            post_initial_message=False,
+            command_name=f"/{command_name}",
+        )
+        if not result.get("success"):
+            await interaction.followup.send(f"Failed to create thread: {result.get('error', 'unknown error')}", ephemeral=True)
+            return
+        thread_id = result.get("thread_id")
+        thread_name = result.get("thread_name") or name
+        link = f"<#{thread_id}>" if thread_id else f"**{thread_name}**"
+        await interaction.followup.send(f"Created thread {link}", ephemeral=True)
+        if thread_id:
+            self._threads.mark(thread_id)
+            await self._dispatch_thread_session(interaction, thread_id, thread_name, starter)
+
     async def _handle_thread_create_slash(
         self,
         interaction: discord.Interaction,
@@ -3873,12 +4269,16 @@ class DiscordAdapter(BasePlatformAdapter):
         name: str,
         message: str = "",
         auto_archive_duration: int = 1440,
+        seed_message: str = "",
+        post_initial_message: bool = True,
+        command_name: str = "/thread",
     ) -> Dict[str, Any]:
         """Create a thread in the current Discord channel.
 
-        Tries ``parent_channel.create_thread()`` first.  If Discord rejects
-        that (e.g. permission issues), falls back to sending a seed message
-        and creating the thread from it.
+        When ``seed_message`` is provided, prefer creating the thread from a
+        visible parent-channel seed message. This leaves a durable Discord UI
+        breadcrumb. Without ``seed_message``, preserve the direct-create-first
+        behavior used by the generic /thread command.
         """
         name = (name or "").strip()
         if not name:
@@ -3899,8 +4299,30 @@ class DiscordAdapter(BasePlatformAdapter):
             return {"error": "Could not determine a parent text channel for the new thread."}
 
         display_name = getattr(getattr(interaction, "user", None), "display_name", None) or "unknown user"
-        reason = f"Requested by {display_name} via /thread"
+        reason = f"Requested by {display_name} via {command_name}"
         starter_message = (message or "").strip()
+        seed_content = (seed_message or "").strip()
+
+        async def _post_starter_if_requested(thread: Any) -> None:
+            if starter_message and post_initial_message:
+                await thread.send(starter_message)
+
+        if seed_content:
+            try:
+                seed_msg = await parent_channel.send(seed_content)
+                thread = await seed_msg.create_thread(
+                    name=name,
+                    auto_archive_duration=auto_archive_duration,
+                    reason=reason,
+                )
+                await _post_starter_if_requested(thread)
+                return {
+                    "success": True,
+                    "thread_id": str(thread.id),
+                    "thread_name": getattr(thread, "name", None) or name,
+                }
+            except Exception as seed_error:
+                logger.warning("[%s] Seed-message thread creation failed: %s", self.name, seed_error)
 
         try:
             thread = await parent_channel.create_thread(
@@ -3908,8 +4330,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 auto_archive_duration=auto_archive_duration,
                 reason=reason,
             )
-            if starter_message:
-                await thread.send(starter_message)
+            await _post_starter_if_requested(thread)
             return {
                 "success": True,
                 "thread_id": str(thread.id),
@@ -3917,13 +4338,14 @@ class DiscordAdapter(BasePlatformAdapter):
             }
         except Exception as direct_error:
             try:
-                seed_content = starter_message or f"\U0001f9f5 Thread created by Hermes: **{name}**"
-                seed_msg = await parent_channel.send(seed_content)
+                fallback_seed = seed_content or starter_message or f"\U0001f9f5 Thread created by Hermes: **{name}**"
+                seed_msg = await parent_channel.send(fallback_seed)
                 thread = await seed_msg.create_thread(
                     name=name,
                     auto_archive_duration=auto_archive_duration,
                     reason=reason,
                 )
+                await _post_starter_if_requested(thread)
                 return {
                     "success": True,
                     "thread_id": str(thread.id),
@@ -4060,6 +4482,70 @@ class DiscordAdapter(BasePlatformAdapter):
             )
             return None
 
+    def _build_exec_approval_embed(self, command: str, description: str):
+        """Build the Discord embed for a dangerous-command approval prompt."""
+        # Discord embed description limit is 4096; show full command up to that
+        max_desc = 4088
+        cmd_display = command if len(command) <= max_desc else command[: max_desc - 3] + "..."
+        embed = discord.Embed(
+            title="⚠️ Command Approval Required",
+            description=f"```\n{cmd_display}\n```",
+            color=discord.Color.orange(),
+        )
+        embed.add_field(name="Reason", value=description, inline=False)
+        return embed
+
+    def _build_exec_approval_view(self, session_key: str):
+        """Build a fresh approval view that resolves the shared session queue."""
+        return ExecApprovalView(
+            session_key=session_key,
+            allowed_user_ids=self._allowed_user_ids,
+            allowed_role_ids=self._allowed_role_ids,
+        )
+
+    async def _send_exec_approval_operator_dms(
+        self,
+        *,
+        command: str,
+        description: str,
+        session_key: str,
+    ) -> None:
+        """Best-effort mirror of an exec approval prompt to operator DMs.
+
+        The primary channel/thread prompt remains canonical.  DM delivery is a
+        convenience copy for configured operator user IDs and must never make the
+        approval fail or remove the in-channel prompt.  Each DM gets a fresh
+        view, but all views share the same ``session_key`` so any button resolves
+        the same pending gateway approval.
+        """
+        if not self._allowed_user_ids:
+            return
+
+        numeric_user_ids = sorted(
+            uid for uid in self._allowed_user_ids
+            if str(uid).strip().isdigit()
+        )
+        for raw_user_id in numeric_user_ids:
+            user_id = int(raw_user_id)
+            try:
+                user = None
+                get_user = getattr(self._client, "get_user", None)
+                if callable(get_user):
+                    user = get_user(user_id)
+                if user is None:
+                    user = await self._client.fetch_user(user_id)
+                await user.send(
+                    embed=self._build_exec_approval_embed(command, description),
+                    view=self._build_exec_approval_view(session_key),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[%s] Failed to mirror exec approval to Discord DM user %s: %s",
+                    self.name,
+                    raw_user_id,
+                    exc,
+                )
+
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,
         description: str = "dangerous command",
@@ -4070,6 +4556,8 @@ class DiscordAdapter(BasePlatformAdapter):
 
         The buttons call ``resolve_gateway_approval()`` to unblock the waiting
         agent thread — this replaces the text-based ``/approve`` flow on Discord.
+        The prompt is also mirrored best-effort to configured operator DMs so a
+        noisy channel/thread cannot hide an approval request.
         """
         if not self._client or not DISCORD_AVAILABLE:
             return SendResult(success=False, error="Not connected")
@@ -4084,23 +4572,15 @@ class DiscordAdapter(BasePlatformAdapter):
             if not channel:
                 channel = await self._client.fetch_channel(int(target_id))
 
-            # Discord embed description limit is 4096; show full command up to that
-            max_desc = 4088
-            cmd_display = command if len(command) <= max_desc else command[: max_desc - 3] + "..."
-            embed = discord.Embed(
-                title="⚠️ Command Approval Required",
-                description=f"```\n{cmd_display}\n```",
-                color=discord.Color.orange(),
+            msg = await channel.send(
+                embed=self._build_exec_approval_embed(command, description),
+                view=self._build_exec_approval_view(session_key),
             )
-            embed.add_field(name="Reason", value=description, inline=False)
-
-            view = ExecApprovalView(
+            await self._send_exec_approval_operator_dms(
+                command=command,
+                description=description,
                 session_key=session_key,
-                allowed_user_ids=self._allowed_user_ids,
-                allowed_role_ids=self._allowed_role_ids,
             )
-
-            msg = await channel.send(embed=embed, view=view)
             return SendResult(success=True, message_id=str(msg.id))
 
         except Exception as e:

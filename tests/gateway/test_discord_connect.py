@@ -347,7 +347,7 @@ async def test_connect_respects_slash_commands_opt_out(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_safe_sync_slash_commands_only_mutates_diffs():
+async def test_safe_sync_slash_commands_preserves_unknown_commands_by_default(monkeypatch):
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
 
     class _DesiredCommand:
@@ -450,6 +450,25 @@ async def test_safe_sync_slash_commands_only_mutates_diffs():
         "updated": 1,
         "recreated": 0,
         "created": 1,
+        "deleted": 0,
+    }
+    fake_http.edit_global_command.assert_awaited_once_with(999, 12, desired_updated)
+    fake_http.upsert_global_command.assert_awaited_once_with(999, desired_created)
+    fake_http.delete_global_command.assert_not_awaited()
+
+    fake_http.edit_global_command.reset_mock()
+    fake_http.upsert_global_command.reset_mock()
+    fake_http.delete_global_command.reset_mock()
+    monkeypatch.setenv("DISCORD_COMMAND_SYNC_ALLOW_DELETE", "true")
+
+    summary = await adapter._safe_sync_slash_commands()
+
+    assert summary == {
+        "total": 3,
+        "unchanged": 1,
+        "updated": 1,
+        "recreated": 0,
+        "created": 1,
         "deleted": 1,
     }
     fake_http.edit_global_command.assert_awaited_once_with(999, 12, desired_updated)
@@ -458,7 +477,8 @@ async def test_safe_sync_slash_commands_only_mutates_diffs():
 
 
 @pytest.mark.asyncio
-async def test_safe_sync_slash_commands_recreates_metadata_only_diffs():
+async def test_safe_sync_slash_commands_skips_metadata_only_diffs_without_recreate(monkeypatch):
+    monkeypatch.delenv("DISCORD_COMMAND_SYNC_ALLOW_RECREATE", raising=False)
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
 
     class _DesiredCommand:
@@ -502,6 +522,76 @@ async def test_safe_sync_slash_commands_recreates_metadata_only_diffs():
         },
     )
 
+    fake_tree = SimpleNamespace(
+        get_commands=lambda: [_DesiredCommand(desired)],
+        fetch_commands=AsyncMock(return_value=[existing]),
+    )
+    fake_http = SimpleNamespace(
+        upsert_global_command=AsyncMock(),
+        edit_global_command=AsyncMock(),
+        delete_global_command=AsyncMock(),
+    )
+    adapter._client = SimpleNamespace(
+        tree=fake_tree,
+        http=fake_http,
+        application_id=999,
+        user=SimpleNamespace(id=999),
+    )
+
+    summary = await adapter._safe_sync_slash_commands()
+
+    assert summary == {
+        "total": 1,
+        "unchanged": 1,
+        "updated": 0,
+        "recreated": 0,
+        "created": 0,
+        "deleted": 0,
+    }
+    fake_http.edit_global_command.assert_not_awaited()
+    fake_http.delete_global_command.assert_not_awaited()
+    fake_http.upsert_global_command.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_safe_sync_slash_commands_allows_recreate_with_explicit_opt_in(monkeypatch):
+    monkeypatch.setenv("DISCORD_COMMAND_SYNC_ALLOW_RECREATE", "true")
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+
+    class _DesiredCommand:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def to_dict(self, tree):
+            assert tree is not None
+            return dict(self._payload)
+
+    class _ExistingCommand:
+        def __init__(self, command_id, payload):
+            self.id = command_id
+            self.name = payload["name"]
+            self.type = SimpleNamespace(value=payload["type"])
+            self._payload = payload
+
+        def to_dict(self):
+            return {
+                "id": self.id,
+                "application_id": 999,
+                **self._payload,
+                "name_localizations": {},
+                "description_localizations": {},
+            }
+
+    desired = {
+        "name": "help",
+        "description": "Show available commands",
+        "type": 1,
+        "options": [],
+        "nsfw": False,
+        "dm_permission": True,
+        "default_member_permissions": "8",
+    }
+    existing = _ExistingCommand(12, {**desired, "default_member_permissions": None})
     fake_tree = SimpleNamespace(
         get_commands=lambda: [_DesiredCommand(desired)],
         fetch_commands=AsyncMock(return_value=[existing]),
@@ -581,6 +671,71 @@ async def test_post_connect_initialization_skips_same_fingerprint_after_success(
 
     fake_tree.fetch_commands.assert_awaited_once()
     fake_http.upsert_global_command.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_post_connect_initialization_retries_when_recreate_opt_in_changes(tmp_path, monkeypatch):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+    monkeypatch.delenv("DISCORD_COMMAND_SYNC_ALLOW_RECREATE", raising=False)
+
+    class _DesiredCommand:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def to_dict(self, tree):
+            assert tree is not None
+            return dict(self._payload)
+
+    class _ExistingCommand:
+        def __init__(self, command_id, payload):
+            self.id = command_id
+            self.name = payload["name"]
+            self.type = SimpleNamespace(value=payload["type"])
+            self._payload = payload
+
+        def to_dict(self):
+            return {
+                "id": self.id,
+                "application_id": 999,
+                **self._payload,
+                "name_localizations": {},
+                "description_localizations": {},
+            }
+
+    desired = {
+        "name": "help",
+        "description": "Show available commands",
+        "type": 1,
+        "options": [],
+        "nsfw": False,
+        "dm_permission": True,
+        "default_member_permissions": "8",
+    }
+    existing = _ExistingCommand(12, {**desired, "default_member_permissions": None})
+    fake_tree = SimpleNamespace(
+        get_commands=lambda: [_DesiredCommand(desired)],
+        fetch_commands=AsyncMock(return_value=[existing]),
+    )
+    fake_http = SimpleNamespace(
+        upsert_global_command=AsyncMock(),
+        edit_global_command=AsyncMock(),
+        delete_global_command=AsyncMock(),
+    )
+    adapter._client = SimpleNamespace(
+        tree=fake_tree,
+        http=fake_http,
+        application_id=999,
+        user=SimpleNamespace(id=999),
+    )
+
+    await adapter._run_post_connect_initialization()
+    monkeypatch.setenv("DISCORD_COMMAND_SYNC_ALLOW_RECREATE", "true")
+    await adapter._run_post_connect_initialization()
+
+    assert fake_tree.fetch_commands.await_count == 2
+    fake_http.delete_global_command.assert_awaited_once_with(999, 12)
+    fake_http.upsert_global_command.assert_awaited_once_with(999, desired)
 
 
 @pytest.mark.asyncio
@@ -820,10 +975,9 @@ async def test_safe_sync_reads_permission_attrs_from_existing_command():
 
 
 @pytest.mark.asyncio
-async def test_safe_sync_detects_contexts_drift():
-    """Regression: contexts and integration_types must be canonicalized
-    so drift in those fields triggers reconciliation. Without this, the
-    diff silently reports 'unchanged' and never reconciles.
+async def test_safe_sync_skips_contexts_drift_recreate_by_default():
+    """contexts and integration_types are canonicalized, but not recreated
+    by default because delete/recreate can churn Discord command IDs.
     """
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
 
@@ -897,11 +1051,11 @@ async def test_safe_sync_detects_contexts_drift():
 
     summary = await adapter._safe_sync_slash_commands()
 
-    # contexts and integration_types are not patchable by
-    # edit_global_command, so the command must be recreated.
-    assert summary["unchanged"] == 0
-    assert summary["recreated"] == 1
+    # contexts and integration_types are not patchable by discord.py's
+    # edit_global_command, so default safe sync skips the recreate path.
+    assert summary["unchanged"] == 1
+    assert summary["recreated"] == 0
     assert summary["updated"] == 0
     fake_http.edit_global_command.assert_not_awaited()
-    fake_http.delete_global_command.assert_awaited_once_with(999, 77)
-    fake_http.upsert_global_command.assert_awaited_once_with(999, desired)
+    fake_http.delete_global_command.assert_not_awaited()
+    fake_http.upsert_global_command.assert_not_awaited()
