@@ -175,6 +175,47 @@ class TestCompress:
         compressor.compress(msgs)
         assert compressor.compression_count == 2
 
+    def test_summary_timeout_scales_for_large_contexts(self, compressor):
+        with (
+            patch("agent.context_compressor._get_task_timeout", return_value=120),
+            patch("agent.context_compressor.estimate_messages_tokens_rough", return_value=143_000),
+        ):
+            assert compressor._compute_summary_timeout([{"role": "user", "content": "x"}]) == 300.0
+
+    def test_summary_timeout_respects_configured_floor(self, compressor):
+        with (
+            patch("agent.context_compressor._get_task_timeout", return_value=360),
+            patch("agent.context_compressor.estimate_messages_tokens_rough", return_value=20_000),
+        ):
+            assert compressor._compute_summary_timeout([{"role": "user", "content": "x"}]) == 360.0
+
+    def test_summary_timeout_caps_huge_contexts(self, compressor):
+        with (
+            patch("agent.context_compressor._get_task_timeout", return_value=120),
+            patch("agent.context_compressor.estimate_messages_tokens_rough", return_value=1_000_000),
+        ):
+            assert compressor._compute_summary_timeout([{"role": "user", "content": "x"}]) == 600.0
+
+    def test_summary_timeout_caps_configured_floor(self, compressor):
+        with (
+            patch("agent.context_compressor._get_task_timeout", return_value=900),
+            patch("agent.context_compressor.estimate_messages_tokens_rough", return_value=20_000),
+        ):
+            assert compressor._compute_summary_timeout([{"role": "user", "content": "x"}]) == 600.0
+
+    def test_generate_summary_passes_adaptive_timeout(self, compressor):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "summary"
+
+        with (
+            patch.object(compressor, "_compute_summary_timeout", return_value=300.0),
+            patch("agent.context_compressor.call_llm", return_value=mock_response) as call,
+        ):
+            compressor._generate_summary([{"role": "user", "content": "x"}])
+
+        assert call.call_args.kwargs["timeout"] == 300.0
+
     def test_protects_first_and_last(self, compressor):
         msgs = self._make_messages(10)
         result = compressor.compress(msgs)

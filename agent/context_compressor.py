@@ -23,7 +23,7 @@ import re
 import time
 from typing import Any, Dict, List, Optional
 
-from agent.auxiliary_client import call_llm, _is_connection_error
+from agent.auxiliary_client import call_llm, _get_task_timeout, _is_connection_error
 from agent.context_engine import ContextEngine
 from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH,
@@ -104,6 +104,16 @@ _IMAGE_TOKEN_ESTIMATE = 1600
 # for tail-cut decisions.
 _IMAGE_CHAR_EQUIVALENT = _IMAGE_TOKEN_ESTIMATE * _CHARS_PER_TOKEN
 _SUMMARY_FAILURE_COOLDOWN_SECONDS = 600
+
+# Compression summaries scale with the amount of source context being compacted.
+# Keep the historical 120s floor as the hang-prevention guard for small windows,
+# but grant large preflight compactions more time instead of failing exactly when
+# summarization is most needed.
+_COMPRESSION_SUMMARY_TIMEOUT_FLOOR_SECONDS = 120.0
+_COMPRESSION_SUMMARY_TIMEOUT_CEILING_SECONDS = 600.0
+_COMPRESSION_SUMMARY_TIMEOUT_BASE_TOKENS = MINIMUM_CONTEXT_LENGTH
+_COMPRESSION_SUMMARY_TIMEOUT_EXTRA_SECONDS_PER_32K = 60.0
+_COMPRESSION_SUMMARY_TIMEOUT_EXTRA_TOKEN_STEP = 32_768
 
 # Hard ceiling for the deterministic summary-failure handoff.  The fallback is
 # only meant to preserve continuity anchors from the dropped window, not to
@@ -934,6 +944,39 @@ class ContextCompressor(ContextEngine):
         budget = int(content_tokens * _SUMMARY_RATIO)
         return max(_MIN_SUMMARY_TOKENS, min(budget, self.max_summary_tokens))
 
+    def _compute_summary_timeout(self, turns_to_summarize: List[Dict[str, Any]]) -> float:
+        """Return an adaptive timeout for the compression summary LLM call.
+
+        Compression is a preflight safety path, so it still needs a hard cap to
+        avoid wedging the user's foreground turn.  A fixed 120s cap is too
+        brittle for very large compactions, though: the bigger the context, the
+        more work the summarizer has to do.  Use the configured
+        ``auxiliary.compression.timeout`` as a user-controlled floor, then add
+        one minute per additional ~32K source tokens above the 64K minimum.
+        The computed timeout, including any configured floor, is capped at ten
+        minutes so a preflight compression attempt cannot block indefinitely.
+        """
+        try:
+            configured = float(_get_task_timeout("compression"))
+        except Exception:
+            configured = _COMPRESSION_SUMMARY_TIMEOUT_FLOOR_SECONDS
+        if configured <= 0:
+            configured = _COMPRESSION_SUMMARY_TIMEOUT_FLOOR_SECONDS
+
+        content_tokens = estimate_messages_tokens_rough(turns_to_summarize)
+        extra_tokens = max(0, content_tokens - _COMPRESSION_SUMMARY_TIMEOUT_BASE_TOKENS)
+        extra_steps = (
+            extra_tokens + _COMPRESSION_SUMMARY_TIMEOUT_EXTRA_TOKEN_STEP - 1
+        ) // _COMPRESSION_SUMMARY_TIMEOUT_EXTRA_TOKEN_STEP
+        adaptive = (
+            _COMPRESSION_SUMMARY_TIMEOUT_FLOOR_SECONDS
+            + extra_steps * _COMPRESSION_SUMMARY_TIMEOUT_EXTRA_SECONDS_PER_32K
+        )
+        return min(
+            _COMPRESSION_SUMMARY_TIMEOUT_CEILING_SECONDS,
+            max(configured, adaptive),
+        )
+
     # Truncation limits for the summarizer input.  These bound how much of
     # each message the summary model sees — the budget is the *summary*
     # model's context window, not the main model's.
@@ -1245,6 +1288,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             return None
 
         summary_budget = self._compute_summary_budget(turns_to_summarize)
+        summary_timeout = self._compute_summary_timeout(turns_to_summarize)
         content_to_summarize = self._serialize_for_summary(turns_to_summarize)
 
         # Preamble shared by both first-compaction and iterative-update prompts.
@@ -1388,7 +1432,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 },
                 "messages": [{"role": "user", "content": prompt}],
                 "max_tokens": int(summary_budget * 1.3),
-                # timeout resolved from auxiliary.compression.timeout config by call_llm
+                "timeout": summary_timeout,
             }
             if self.summary_model:
                 call_kwargs["model"] = self.summary_model
