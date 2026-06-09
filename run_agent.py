@@ -2400,6 +2400,36 @@ class AIAgent:
             for path in targets:
                 state.pop(path, None)
 
+    @staticmethod
+    def _append_file_mutation_recovery_guidance(
+        tool_name: str,
+        function_result: str,
+        *,
+        failed: bool,
+    ) -> str:
+        """Tell the model to recover immediately after a failed file edit.
+
+        The turn-end verifier is only a last-resort user-facing safety net.
+        The primary behavior should be: once a tracked file-mutation tool
+        fails, the next model step changes strategy, inspects/verifies state,
+        and retries with corrected context instead of producing a success
+        summary. This guidance is injected into the tool result that the
+        model sees, not into the final answer footer.
+        """
+        if not failed or tool_name not in _FILE_MUTATING_TOOLS:
+            return function_result
+        if file_mutation_result_landed(tool_name, function_result):
+            return function_result
+        guidance = (
+            "\n\n[File mutation recovery required: this edit did not land. "
+            "Do not claim the file was changed. Change strategy now: inspect "
+            "the current file state with read_file or git status/diff, then "
+            "retry with corrected context or a different edit tool. Before the "
+            "final reply, verify the final file content and tests/checks when "
+            "applicable.]"
+        )
+        return (function_result or "") + guidance
+
     def _file_mutation_verifier_enabled(self) -> bool:
         """Check whether the per-turn file-mutation verifier footer is on.
 
@@ -2538,15 +2568,14 @@ class AIAgent:
     def _format_file_mutation_failure_footer(cls, failed: Dict[str, Dict[str, Any]]) -> str:
         """Render the per-turn failed-mutation dict as a user-facing footer.
 
-        Displays up to 10 paths with their first error preview, then a
-        count of any additional failures.  Returns an empty string when
-        the dict is empty so callers can concatenate unconditionally.
+        Displays up to 10 paths with their status, then a count of any
+        additional failures.  Returns an empty string when the dict is
+        empty so callers can concatenate unconditionally.
 
-        Every file path that reaches the user-facing text — both the bullet
-        path and any path echoed inside the tool's error preview — is
-        backtick-wrapped via ``_neutralize_footer_paths`` so the gateway's
-        bare-path media extractor can never auto-attach a protected file
-        (e.g. ``~/.hermes/config.yaml``) to a messaging channel (#35584).
+        Raw tool error previews are intentionally not rendered here.  They
+        can be long, noisy, or include implementation details/paths that
+        should stay in logs/tool history rather than the final instruction
+        result.  The footer only says which path requires verification.
         """
         if not failed:
             return ""
@@ -2561,24 +2590,20 @@ class AIAgent:
         for path, info in failed.items():
             if shown >= 10:
                 break
-            preview = (info.get("error_preview") or "").strip()
             tool = info.get("tool") or "patch"
             status = info.get("status") or "unresolved"
             if status == "changed_after_failure":
                 status_text = "target changed after the failed attempt; verify final content"
             else:
                 status_text = "no later tracked success/change detected"
-            if preview:
-                lines.append(f"  • `{path}` — [{tool}] {status_text}: {preview}")
-            else:
-                lines.append(f"  • `{path}` — [{tool}] {status_text}")
+            lines.append(f"  • `{path}` — [{tool}] {status_text}")
             shown += 1
         remaining = len(failed) - shown
         if remaining > 0:
             lines.append(f"  • … and {remaining} more")
-        # Neutralize any path the preview text echoed (the bullet path is
-        # already backticked above; the lookbehind keeps it from being
-        # double-wrapped).
+        # Defense-in-depth for any future text additions: keep all footer
+        # paths inline-code wrapped so gateway media extraction cannot treat
+        # them as deliverable attachments.
         return cls._neutralize_footer_paths("\n".join(lines))
 
     def _turn_completion_explainer_enabled(self) -> bool:
@@ -4808,6 +4833,11 @@ class AIAgent:
         )
         if decision.action in {"warn", "halt"}:
             function_result = append_toolguard_guidance(function_result, decision)
+        function_result = self._append_file_mutation_recovery_guidance(
+            tool_name,
+            function_result,
+            failed=failed,
+        )
         if decision.should_halt:
             self._set_tool_guardrail_halt(decision)
         return function_result

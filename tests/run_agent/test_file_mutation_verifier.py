@@ -308,6 +308,46 @@ class TestRefreshFileMutationFailureState:
 # ---------------------------------------------------------------------------
 
 
+class TestFileMutationRecoveryGuidance:
+    def test_failed_patch_gets_action_guidance_for_next_model_step(self):
+        out = AIAgent._append_file_mutation_recovery_guidance(
+            "patch",
+            json.dumps({"success": False, "error": "Could not find old_string"}),
+            failed=True,
+        )
+        assert "File mutation recovery required" in out
+        assert "Do not claim the file was changed" in out
+        assert "Change strategy now" in out
+        assert "read_file or git status/diff" in out
+
+    def test_successful_mutation_does_not_get_recovery_guidance(self):
+        out = AIAgent._append_file_mutation_recovery_guidance(
+            "patch",
+            json.dumps({"success": True, "diff": "--- a/x\n+++ b/x"}),
+            failed=False,
+        )
+        assert "File mutation recovery required" not in out
+
+    def test_landed_write_with_lint_error_does_not_get_recovery_guidance(self):
+        out = AIAgent._append_file_mutation_recovery_guidance(
+            "write_file",
+            json.dumps({
+                "bytes_written": 24,
+                "lint": {"status": "error", "output": "SyntaxError"},
+            }),
+            failed=True,
+        )
+        assert "File mutation recovery required" not in out
+
+    def test_non_file_mutating_failure_does_not_get_file_recovery_guidance(self):
+        out = AIAgent._append_file_mutation_recovery_guidance(
+            "terminal",
+            json.dumps({"exit_code": 1, "output": "boom"}),
+            failed=True,
+        )
+        assert "File mutation recovery required" not in out
+
+
 class TestFormatFooter:
     def test_empty_returns_empty_string(self):
         assert AIAgent._format_file_mutation_failure_footer({}) == ""
@@ -318,7 +358,7 @@ class TestFormatFooter:
         )
         assert "1 failed file-mutation attempt(s) require verification" in out
         assert "/tmp/a.md" in out
-        assert "Could not find old_string" in out
+        assert "Could not find old_string" not in out
         assert "git status" in out  # user-actionable hint
         assert "no later tracked success/change detected" in out
 
@@ -332,6 +372,7 @@ class TestFormatFooter:
         )
         assert "target changed after the failed attempt" in out
         assert "verify final content" in out
+        assert "Could not find old_string" not in out
 
     def test_truncation_at_10_entries(self):
         failed = {
@@ -346,9 +387,13 @@ class TestFormatFooter:
         bullet_lines = [ln for ln in lines if ln.lstrip().startswith("•")]
         assert len(bullet_lines) == 11  # 10 shown + 1 summary
 
-    def test_paths_are_backtick_wrapped(self):
-        """Footer paths must be inline-code wrapped so the gateway's bare-path
-        media extractor can't auto-attach them (#35584 defense-in-depth)."""
+    def test_paths_are_backtick_wrapped_and_error_preview_hidden(self):
+        """Footer paths must be inline-code wrapped and raw error previews hidden.
+
+        This keeps instruction results concise and prevents the gateway's
+        bare-path media extractor from auto-attaching paths echoed by a tool
+        error preview (#35584 defense-in-depth).
+        """
         out = AIAgent._format_file_mutation_failure_footer(
             {"/home/u/.hermes/config.yaml": {
                 "tool": "patch",
@@ -362,10 +407,9 @@ class TestFormatFooter:
         assert "/home/u/.hermes/config.yaml" in out
         # Bullet path is backticked.
         assert "`/home/u/.hermes/config.yaml`" in out
-        # The path echoed inside the preview is ALSO backticked (the real
-        # file_operations.py denial message embeds it in single quotes, which
-        # do NOT block the gateway extractor's regex).
-        assert "'`/home/u/.hermes/config.yaml`'" in out
+        # Raw error preview is not rendered in the final instruction result.
+        assert "Write denied" not in out
+        assert "protected system/credential file" not in out
         # No double-backticking anywhere.
         assert "``" not in out
 
