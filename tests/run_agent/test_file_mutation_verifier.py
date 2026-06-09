@@ -5,9 +5,12 @@ Covers the three moving pieces:
 1. ``_extract_file_mutation_targets`` — pulls file paths from write_file /
    patch (replace + V4A) tool-call argument dicts.
 2. ``AIAgent._record_file_mutation_result`` — builds the per-turn state
-   dict, removing entries when a later success supersedes an earlier
-   failure for the same path.
-3. ``AIAgent._format_file_mutation_failure_footer`` — renders the dict
+   dict, removing entries when a later tracked success supersedes an earlier
+   failure for the same path, and storing a failure-time fingerprint.
+3. ``AIAgent._refresh_file_mutation_failure_state`` — distinguishes still
+   unresolved failures from files changed later by an untracked mechanism
+   such as ``execute_code``.
+4. ``AIAgent._format_file_mutation_failure_footer`` — renders the dict
    as a user-visible advisory.
 
 Regression target: the "Ben Eng llm-wiki" session where grok-4.1-fast
@@ -150,6 +153,7 @@ class TestRecordFileMutationResult:
         assert "/tmp/a.md" in state
         assert state["/tmp/a.md"]["tool"] == "patch"
         assert "Could not find old_string" in state["/tmp/a.md"]["error_preview"]
+        assert "fingerprint_at_failure" in state["/tmp/a.md"]
 
     def test_success_removes_prior_failure(self):
         agent = _bare_agent()
@@ -270,6 +274,36 @@ class TestRecordFileMutationResult:
 
 
 # ---------------------------------------------------------------------------
+# _refresh_file_mutation_failure_state
+# ---------------------------------------------------------------------------
+
+
+class TestRefreshFileMutationFailureState:
+    def test_unchanged_file_remains_unresolved(self, tmp_path):
+        path = tmp_path / "a.md"
+        path.write_text("before")
+        before = AIAgent._file_mutation_fingerprint(str(path))
+
+        refreshed = AIAgent._refresh_file_mutation_failure_state(
+            {str(path): {"tool": "patch", "error_preview": "old_string missing", "fingerprint_at_failure": before}},
+        )
+
+        assert refreshed[str(path)]["status"] == "unresolved"
+
+    def test_later_untracked_file_change_is_reported(self, tmp_path):
+        path = tmp_path / "a.md"
+        path.write_text("before")
+        before = AIAgent._file_mutation_fingerprint(str(path))
+        path.write_text("after")
+
+        refreshed = AIAgent._refresh_file_mutation_failure_state(
+            {str(path): {"tool": "patch", "error_preview": "old_string missing", "fingerprint_at_failure": before}},
+        )
+
+        assert refreshed[str(path)]["status"] == "changed_after_failure"
+
+
+# ---------------------------------------------------------------------------
 # _format_file_mutation_failure_footer
 # ---------------------------------------------------------------------------
 
@@ -282,10 +316,22 @@ class TestFormatFooter:
         out = AIAgent._format_file_mutation_failure_footer(
             {"/tmp/a.md": {"tool": "patch", "error_preview": "Could not find old_string"}},
         )
-        assert "1 file(s) were NOT modified" in out
+        assert "1 failed file-mutation attempt(s) require verification" in out
         assert "/tmp/a.md" in out
         assert "Could not find old_string" in out
         assert "git status" in out  # user-actionable hint
+        assert "no later tracked success/change detected" in out
+
+    def test_changed_after_failure_footer(self):
+        out = AIAgent._format_file_mutation_failure_footer(
+            {"/tmp/a.md": {
+                "tool": "patch",
+                "status": "changed_after_failure",
+                "error_preview": "Could not find old_string",
+            }},
+        )
+        assert "target changed after the failed attempt" in out
+        assert "verify final content" in out
 
     def test_truncation_at_10_entries(self):
         failed = {
@@ -293,7 +339,7 @@ class TestFormatFooter:
             for i in range(15)
         }
         out = AIAgent._format_file_mutation_failure_footer(failed)
-        assert "15 file(s) were NOT modified" in out
+        assert "15 failed file-mutation attempt(s) require verification" in out
         assert "… and 5 more" in out
         # Ten file bullets + header + "and X more" line
         lines = out.split("\n")

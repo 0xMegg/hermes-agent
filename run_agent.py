@@ -2394,6 +2394,7 @@ class AIAgent:
                     state[path] = {
                         "tool": tool_name,
                         "error_preview": preview,
+                        "fingerprint_at_failure": self._file_mutation_fingerprint(path),
                     }
         else:
             for path in targets:
@@ -2455,6 +2456,84 @@ class AIAgent:
             return text
         return cls._FOOTER_PATH_RE.sub(lambda m: f"`{m.group(0)}`", text)
 
+    @staticmethod
+    def _file_mutation_fingerprint(path: str) -> Dict[str, Any]:
+        """Return a lightweight local fingerprint for verifier recovery checks.
+
+        The file-mutation verifier tracks failures from explicit mutating
+        tools (``write_file`` / ``patch``).  A later successful write by those
+        tools clears the failure.  Some recovery paths, however, use a less
+        specific tool such as ``execute_code`` to edit the same file.  This
+        fingerprint lets the turn-end footer distinguish "still unchanged"
+        from "changed later by an untracked mechanism" without opening a new
+        tool loop after the LLM has already produced its final answer.
+
+        Keep this best-effort and bounded: small files include a sha256;
+        large files rely on stat fields to avoid expensive hashing in the
+        response-finalization path.
+        """
+        try:
+            p = Path(path).expanduser()
+            st = p.stat()
+            fp: Dict[str, Any] = {
+                "exists": True,
+                "size": st.st_size,
+                "mtime_ns": st.st_mtime_ns,
+            }
+            if st.st_size <= 10 * 1024 * 1024:
+                h = hashlib.sha256()
+                with p.open("rb") as fh:
+                    for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                        h.update(chunk)
+                fp["sha256"] = h.hexdigest()
+            return fp
+        except FileNotFoundError:
+            return {"exists": False}
+        except Exception as exc:
+            return {"exists": None, "error": type(exc).__name__}
+
+    @classmethod
+    def _fingerprint_changed(cls, before: Optional[Dict[str, Any]], after: Dict[str, Any]) -> bool:
+        """Best-effort comparison for file mutation recovery detection."""
+        if not before:
+            return False
+        if before.get("exists") != after.get("exists"):
+            return True
+        if before.get("exists") is not True or after.get("exists") is not True:
+            return False
+        if before.get("sha256") and after.get("sha256"):
+            return before.get("sha256") != after.get("sha256")
+        return (
+            before.get("size") != after.get("size")
+            or before.get("mtime_ns") != after.get("mtime_ns")
+        )
+
+    @classmethod
+    def _refresh_file_mutation_failure_state(
+        cls,
+        failed: Dict[str, Dict[str, Any]],
+    ) -> Dict[str, Dict[str, Any]]:
+        """Annotate unresolved failures with current on-disk recovery state.
+
+        A later tracked ``write_file`` / ``patch`` success removes entries
+        before this point.  Entries that remain are still failed mutation
+        attempts, but the target file may have changed through another tool
+        such as ``execute_code``.  Preserve the warning while making that
+        distinction explicit for the user.
+        """
+        refreshed: Dict[str, Dict[str, Any]] = {}
+        for path, info in (failed or {}).items():
+            item = dict(info or {})
+            before = item.get("fingerprint_at_failure")
+            after = cls._file_mutation_fingerprint(path)
+            item["fingerprint_current"] = after
+            if cls._fingerprint_changed(before, after):
+                item["status"] = "changed_after_failure"
+            else:
+                item["status"] = "unresolved"
+            refreshed[path] = item
+        return refreshed
+
     @classmethod
     def _format_file_mutation_failure_footer(cls, failed: Dict[str, Dict[str, Any]]) -> str:
         """Render the per-turn failed-mutation dict as a user-facing footer.
@@ -2473,9 +2552,10 @@ class AIAgent:
             return ""
         lines = [
             "⚠️ File-mutation verifier: "
-            f"{len(failed)} file(s) were NOT modified this turn despite any "
-            "wording above that may suggest otherwise. Run `git status` or "
-            "`read_file` to confirm."
+            f"{len(failed)} failed file-mutation attempt(s) require verification. "
+            "A later untracked change may have recovered a file; verify with "
+            "`git status` or `read_file` before trusting any success wording "
+            "above."
         ]
         shown = 0
         for path, info in failed.items():
@@ -2483,10 +2563,15 @@ class AIAgent:
                 break
             preview = (info.get("error_preview") or "").strip()
             tool = info.get("tool") or "patch"
-            if preview:
-                lines.append(f"  • `{path}` — [{tool}] {preview}")
+            status = info.get("status") or "unresolved"
+            if status == "changed_after_failure":
+                status_text = "target changed after the failed attempt; verify final content"
             else:
-                lines.append(f"  • `{path}` — [{tool}] failed")
+                status_text = "no later tracked success/change detected"
+            if preview:
+                lines.append(f"  • `{path}` — [{tool}] {status_text}: {preview}")
+            else:
+                lines.append(f"  • `{path}` — [{tool}] {status_text}")
             shown += 1
         remaining = len(failed) - shown
         if remaining > 0:
