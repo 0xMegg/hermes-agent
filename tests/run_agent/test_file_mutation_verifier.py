@@ -170,6 +170,33 @@ class TestRecordFileMutationResult:
         )
         assert agent._turn_failed_file_mutations == {}
 
+    def test_successful_read_file_verification_clears_prior_failure(self):
+        agent = _bare_agent()
+        agent._record_file_mutation_result(
+            "patch", {"mode": "replace", "path": "/tmp/a.md", "old_string": "x", "new_string": "y"},
+            json.dumps({"error": "not found"}), is_error=True,
+        )
+        assert "/tmp/a.md" in getattr(agent, "_turn_failed_file_mutations")
+
+        agent._record_file_mutation_result(
+            "read_file", {"path": "/tmp/a.md"}, "1|fixed content", is_error=False,
+        )
+
+        assert getattr(agent, "_turn_failed_file_mutations") == {}
+
+    def test_failed_read_file_does_not_clear_prior_failure(self):
+        agent = _bare_agent()
+        agent._record_file_mutation_result(
+            "patch", {"mode": "replace", "path": "/tmp/a.md", "old_string": "x", "new_string": "y"},
+            json.dumps({"error": "not found"}), is_error=True,
+        )
+
+        agent._record_file_mutation_result(
+            "read_file", {"path": "/tmp/a.md"}, "not found", is_error=True,
+        )
+
+        assert "/tmp/a.md" in getattr(agent, "_turn_failed_file_mutations")
+
     def test_write_file_with_lint_error_counts_as_landed(self):
         agent = _bare_agent()
         agent._record_file_mutation_result(
@@ -351,6 +378,24 @@ class TestFileMutationRecoveryGuidance:
 class TestFormatFooter:
     def test_empty_returns_empty_string(self):
         assert AIAgent._format_file_mutation_failure_footer({}) == ""
+
+    def test_recovery_nudge_is_model_facing_and_blocks_finalization(self):
+        out = AIAgent._format_file_mutation_recovery_nudge(
+            {"/tmp/a.md": {"tool": "patch", "status": "changed_after_failure"}},
+        )
+        assert "File mutation recovery required before final answer" in out
+        assert "Do not answer the user yet" in out
+        assert "Use tools now" in out
+        assert "/tmp/a.md [patch] status=changed_after_failure" in out
+
+    def test_blocked_response_is_not_success_footer(self):
+        out = AIAgent._format_file_mutation_blocked_response(
+            {"/tmp/a.md": {"tool": "patch", "status": "unresolved"}},
+        )
+        assert "Final answer blocked" in out
+        assert "withheld the model's final response" in out
+        assert "File-mutation verifier:" not in out
+        assert "`/tmp/a.md`" in out
 
     def test_single_failure(self):
         out = AIAgent._format_file_mutation_failure_footer(

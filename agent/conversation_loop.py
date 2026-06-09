@@ -735,14 +735,16 @@ def run_conversation(
     truncated_tool_call_retries = 0
     truncated_response_parts: List[str] = []
     compression_attempts = 0
+    file_mutation_recovery_retries = 0
+    max_file_mutation_recovery_retries = 2
     _turn_exit_reason = "unknown"  # Diagnostic: why the loop ended
 
-    # Per-turn file-mutation verifier state.  Keyed by resolved path;
+    # Per-turn file-mutation verifier state.  Keyed by tool target path;
     # each failed ``write_file`` / ``patch`` call records the error
-    # preview.  Later successful writes to the same path remove the
-    # entry (the model recovered).  At end-of-turn, any entries still
-    # present are surfaced in an advisory footer so the model cannot
-    # over-claim success while the file is actually unchanged on disk.
+    # preview.  Later successful writes or successful same-path read_file
+    # verification remove the entry (the model recovered/verified).  Before
+    # final-answer output, unresolved entries block finalization and force
+    # another tool loop so the model cannot over-claim success.
     agent._turn_failed_file_mutations: Dict[str, Dict[str, Any]] = {}
     
     # Record the execution thread so interrupt()/clear_interrupt() can
@@ -4372,6 +4374,41 @@ def run_conversation(
                     length_continue_retries = 0
                 
                 final_response = agent._strip_think_blocks(final_response).strip()
+
+                _failed_mutations = getattr(agent, "_turn_failed_file_mutations", None) or {}
+                if _failed_mutations and agent._file_mutation_verifier_enabled():
+                    _failed_mutations = agent._refresh_file_mutation_failure_state(_failed_mutations)
+                    if _failed_mutations:
+                        agent._turn_failed_file_mutations = _failed_mutations
+                        if file_mutation_recovery_retries < max_file_mutation_recovery_retries:
+                            file_mutation_recovery_retries += 1
+                            logger.warning(
+                                "Blocking final response due to unresolved file mutation failures (%d/%d)",
+                                file_mutation_recovery_retries,
+                                max_file_mutation_recovery_retries,
+                            )
+                            agent._buffer_status(
+                                "⚠️ File mutation failure unresolved — blocking final answer and forcing recovery"
+                            )
+                            blocked_msg = agent._build_assistant_message(assistant_message, "incomplete")
+                            blocked_msg["content"] = "(final answer withheld: unresolved file mutation recovery required)"
+                            blocked_msg["_file_mutation_recovery_synthetic"] = True
+                            messages.append(blocked_msg)
+                            messages.append({
+                                "role": "user",
+                                "content": agent._format_file_mutation_recovery_nudge(_failed_mutations),
+                                "_file_mutation_recovery_synthetic": True,
+                            })
+                            agent._session_messages = messages
+                            final_response = None
+                            continue
+
+                        _turn_exit_reason = "file_mutation_recovery_blocked"
+                        final_response = agent._format_file_mutation_blocked_response(_failed_mutations)
+                        final_msg = {"role": "assistant", "content": final_response}
+                        messages.append(final_msg)
+                        failed = True
+                        break
                 
                 final_msg = agent._build_assistant_message(assistant_message, finish_reason)
 
@@ -4386,6 +4423,7 @@ def run_conversation(
                         messages[-1].get("_thinking_prefill")
                         or messages[-1].get("_empty_recovery_synthetic")
                         or messages[-1].get("_empty_terminal_sentinel")
+                        or messages[-1].get("_file_mutation_recovery_synthetic")
                     )
                 ):
                     messages.pop()
@@ -4605,7 +4643,10 @@ def run_conversation(
     # Gate: only applied when a real text response exists for this
     # turn and the user didn't interrupt.  Empty/interrupted turns
     # already have other surface text that shouldn't be augmented.
-    if final_response and not interrupted:
+    # If the loop already hard-blocked finalization for unresolved
+    # mutation failures, do not append the old footer on top of that
+    # controlled failure response.
+    if final_response and not interrupted and _turn_exit_reason != "file_mutation_recovery_blocked":
         try:
             _failed = getattr(agent, "_turn_failed_file_mutations", None) or {}
             if _failed and agent._file_mutation_verifier_enabled():

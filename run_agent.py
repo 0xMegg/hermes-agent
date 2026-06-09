@@ -2375,10 +2375,15 @@ class AIAgent:
         state dict hasn't been initialised yet (e.g. a tool dispatched
         outside ``run_conversation``).
         """
-        if tool_name not in _FILE_MUTATING_TOOLS:
-            return
         state = getattr(self, "_turn_failed_file_mutations", None)
         if state is None:
+            return
+        if tool_name == "read_file" and not is_error:
+            path = args.get("path") if isinstance(args, dict) else None
+            if path:
+                state.pop(str(path), None)
+            return
+        if tool_name not in _FILE_MUTATING_TOOLS:
             return
         targets = _extract_file_mutation_targets(tool_name, args)
         if not targets:
@@ -2604,6 +2609,51 @@ class AIAgent:
         # Defense-in-depth for any future text additions: keep all footer
         # paths inline-code wrapped so gateway media extraction cannot treat
         # them as deliverable attachments.
+        return cls._neutralize_footer_paths("\n".join(lines))
+
+    @classmethod
+    def _format_file_mutation_recovery_nudge(cls, failed: Dict[str, Dict[str, Any]]) -> str:
+        """Model-facing instruction used to block premature final answers.
+
+        This is intentionally separate from the user-facing footer.  If a
+        tracked file mutation failed and has not been superseded by a tracked
+        write, the model must stay inside the tool loop: inspect current file
+        state, retry or verify, and only then produce a final answer.
+        """
+        lines = [
+            "File mutation recovery required before final answer.",
+            "You attempted to produce a final answer while failed file-mutation attempt(s) remain unresolved.",
+            "Do not answer the user yet. Use tools now to inspect, repair, or verify the final file state.",
+            "Required actions:",
+            "1. Run read_file, git status/diff, or equivalent verification for each listed path.",
+            "2. If the intended edit did not land, retry with corrected context or a different edit tool.",
+            "3. Run relevant tests/checks when applicable.",
+            "4. Only after verification succeeds, provide the final user-facing summary.",
+            "Unresolved failed mutation attempts:",
+        ]
+        for path, info in (failed or {}).items():
+            tool = info.get("tool") or "patch"
+            status = info.get("status") or "unresolved"
+            lines.append(f"- {path} [{tool}] status={status}")
+        return "\n".join(lines)
+
+    @classmethod
+    def _format_file_mutation_blocked_response(cls, failed: Dict[str, Dict[str, Any]]) -> str:
+        """Hard-stop response if the model repeatedly tries to finalize.
+
+        This is not a success answer.  It is a controlled failure explaining
+        that Hermes refused to print the model's final summary because the
+        verifier still has unresolved mutation failures after recovery nudges.
+        """
+        lines = [
+            "⚠️ Final answer blocked: unresolved file-mutation failure remains.",
+            "Hermes withheld the model's final response instead of appending it with an error footer.",
+            "Run verification/recovery tools before retrying the final answer.",
+        ]
+        for path, info in (failed or {}).items():
+            tool = info.get("tool") or "patch"
+            status = info.get("status") or "unresolved"
+            lines.append(f"  • `{path}` — [{tool}] {status}")
         return cls._neutralize_footer_paths("\n".join(lines))
 
     def _turn_completion_explainer_enabled(self) -> bool:
