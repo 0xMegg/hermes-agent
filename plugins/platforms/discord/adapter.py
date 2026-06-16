@@ -3678,6 +3678,7 @@ The KODY workspace subagent owns orchestration and implementation routing from /
 Run product implementation and child-local verification from the target child repo when needed.
 DB writes, imports, migrations, deploys, or other production-affecting actions require fresh explicit user approval; ordinary "진행" is not enough.
 Ask only for gaps that source data cannot answer; inspect available repo/source facts first.
+When the user says "합의 사이클" or the task is non-trivial project work, load skill `kamill-consensus-cycle` and follow the Opus plan -> project subagent plan review -> Opus implementation -> project subagent implementation review loop.
 Kamill must verify concrete evidence (diff, test, log, or command output) before saying work is done.
 Do not print secrets, .env contents, auth tokens, or API keys.
 Reply to me in Korean.""",
@@ -3718,6 +3719,7 @@ Kamill controller is Korean user-facing and only handles routing, approval bound
 The BestST project subagent owns implementation in /Users/qnb/dev/workouts/bestst.
 Default to F1-first work. F3/HWPX/Hancom/ZIP gates require explicit user direction or approval before proceeding.
 Prevent cross-project context bleed; do not import assumptions, code paths, or evidence from other projects unless the user explicitly scopes them in.
+When the user says "합의 사이클" or the task is non-trivial project work, load skill `kamill-consensus-cycle` and follow the Opus plan -> project subagent plan review -> Opus implementation -> project subagent implementation review loop.
 Kamill must verify concrete evidence (diff, test, log, or command output) before saying work is done.
 Do not print secrets, env contents, auth tokens, or API keys.
 Reply to me in Korean.""",
@@ -3729,6 +3731,7 @@ Reply to me in Korean.""",
 No repo is anchored by default.
 If repo edits, memory changes, skill changes, config changes, gateway changes, or automation are needed, propose the change first and wait for explicit approval.
 Keep proposal, review, approval, and application boundaries clear.
+When the user says "합의 사이클" or a non-trivial project workflow is being designed, load skill `kamill-consensus-cycle`; do not treat that cycle as Forge-specific.
 Do not print secrets, .env contents, auth tokens, or API keys.
 Reply to me in Korean.""",
         },

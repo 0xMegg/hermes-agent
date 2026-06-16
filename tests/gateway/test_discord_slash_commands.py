@@ -131,6 +131,9 @@ def test_kody_workspace_preset_enforces_subagent_boundary(adapter):
     assert "DB writes, imports, migrations, deploys" in starter
     assert "ordinary \"진행\" is not enough" in starter
     assert "Ask only for gaps that source data cannot answer" in starter
+    assert "합의 사이클" in starter
+    assert "kamill-consensus-cycle" in starter
+    assert "Opus plan -> project subagent plan review" in starter
     assert "verify concrete evidence" in starter
 
 
@@ -145,7 +148,19 @@ def test_bestst_preset_enforces_subagent_boundary_and_f1_first(adapter):
     assert "Default to F1-first work" in starter
     assert "F3/HWPX/Hancom/ZIP gates require explicit user direction or approval" in starter
     assert "Prevent cross-project context bleed" in starter
+    assert "합의 사이클" in starter
+    assert "kamill-consensus-cycle" in starter
+    assert "Opus plan -> project subagent plan review" in starter
     assert "verify concrete evidence" in starter
+
+
+def test_kamill_forge_preset_names_consensus_cycle_without_scoping_it_to_forge(adapter):
+    name, starter = adapter._build_preset_thread("kamill-forge")
+
+    assert name == "kamill-forge"
+    assert "합의 사이클" in starter
+    assert "kamill-consensus-cycle" in starter
+    assert "do not treat that cycle as Forge-specific" in starter
 
 
 # ------------------------------------------------------------------
