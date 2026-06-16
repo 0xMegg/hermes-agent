@@ -67,6 +67,27 @@ _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
 
+
+def _gateway_service_manager_from_env() -> Optional[str]:
+    """Return the service manager that spawned this gateway process, if known.
+
+    This is intentionally narrower than host capability detection: a macOS
+    machine can support launchd, but a foreground ``hermes gateway run`` should
+    still use the detached/manual restart path. Systemd children carry
+    ``INVOCATION_ID``; launchd children carry an ``XPC_SERVICE_NAME`` matching
+    the installed Hermes launchd label (for example ``ai.hermes.gateway``).
+    """
+    if os.environ.get("INVOCATION_ID"):
+        return "systemd"
+    if os.environ.get("XPC_SERVICE_NAME", "").startswith("ai.hermes."):
+        return "launchd"
+    return None
+
+
+def _gateway_running_under_service_manager() -> bool:
+    return _gateway_service_manager_from_env() is not None
+
+
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"("  # transient/auxiliary status that should stay in logs, not Telegram chat
     r"auxiliary\s+.+\s+failed"
@@ -6695,9 +6716,9 @@ class GatewayRunner:
                 # KeepAlive.SuccessfulExit=false needs a non-zero exit to
                 # relaunch, so keep the old code on macOS.
                 self._exit_code = (
-                    GATEWAY_SERVICE_RESTART_EXIT_CODE
-                    if sys.platform == "darwin" or not os.environ.get("INVOCATION_ID")
-                    else 0
+                    0
+                    if _gateway_service_manager_from_env() == "systemd"
+                    else GATEWAY_SERVICE_RESTART_EXIT_CODE
                 )
                 self._exit_reason = self._exit_reason or "Gateway restart requested"
 
@@ -10739,9 +10760,10 @@ class GatewayRunner:
         # Docker/Podman container, use the service restart path: exit with
         # code 75 so the service manager / container restart policy restarts
         # us.  The detached subprocess approach (setsid + bash) doesn't work
-        # under systemd (KillMode=mixed kills the cgroup) or Docker (tini
-        # exits when the gateway dies, taking the detached helper with it).
-        _under_service = bool(os.environ.get("INVOCATION_ID"))  # systemd sets this
+        # under systemd (KillMode=mixed kills the cgroup), launchd (service
+        # children should be relaunched by launchd), or Docker (tini exits
+        # when the gateway dies, taking the detached helper with it).
+        _under_service = _gateway_running_under_service_manager()
         _in_container = os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
         if _under_service or _in_container:
             self.request_restart(detached=False, via_service=True)
