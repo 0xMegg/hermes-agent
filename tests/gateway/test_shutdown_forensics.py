@@ -65,20 +65,42 @@ class TestSnapshotShutdownContext:
 
     def test_under_systemd_flag_uses_invocation_id(self, monkeypatch):
         monkeypatch.setenv("INVOCATION_ID", "abc123")
+        monkeypatch.delenv("XPC_SERVICE_NAME", raising=False)
         ctx = sf.snapshot_shutdown_context(signal.SIGTERM)
         assert ctx["under_systemd"] is True
+        assert ctx["under_launchd"] is False
+        assert ctx["service_manager"] == "systemd"
         assert ctx["systemd_invocation_id"] == "abc123"
+
+    def test_launchd_flag_uses_hermes_xpc_service_name(self, monkeypatch):
+        monkeypatch.delenv("INVOCATION_ID", raising=False)
+        monkeypatch.setenv("XPC_SERVICE_NAME", "ai.hermes.gateway")
+
+        ctx = sf.snapshot_shutdown_context(signal.SIGTERM)
+
+        assert ctx["under_systemd"] is False
+        assert ctx["under_launchd"] is True
+        assert ctx["service_manager"] == "launchd"
+        assert ctx["xpc_service_name"] == "ai.hermes.gateway"
+
+        line = sf.format_context_for_log(ctx)
+        assert "service_manager=launchd" in line
+        assert "under_systemd=no" in line
+        assert "under_launchd=yes" in line
 
     def test_under_systemd_false_without_invocation_id_and_normal_ppid(
         self, monkeypatch
     ):
         monkeypatch.delenv("INVOCATION_ID", raising=False)
+        monkeypatch.delenv("XPC_SERVICE_NAME", raising=False)
         # We can't actually change ppid; skip if we happen to be reaped
         # by init (e.g. running under tini).
         if os.getppid() == 1:
             pytest.skip("test process is reaped by init")
         ctx = sf.snapshot_shutdown_context(signal.SIGTERM)
         assert ctx["under_systemd"] is False
+        assert ctx["under_launchd"] is False
+        assert ctx["service_manager"] is None
 
     def test_completes_quickly(self):
         """Snapshot must NOT block — it runs inside the asyncio signal handler."""
