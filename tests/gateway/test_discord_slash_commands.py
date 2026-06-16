@@ -115,6 +115,40 @@ def adapter():
 
 
 # ------------------------------------------------------------------
+# Project preset starter policy
+# ------------------------------------------------------------------
+
+
+def test_kody_workspace_preset_enforces_subagent_boundary(adapter):
+    name, starter = adapter._build_preset_thread("kody-workspace")
+
+    assert name == "kody-workspace"
+    assert "Kamill controller is Korean user-facing" in starter
+    assert "must not perform project implementation or mutate project files directly" in starter
+    assert "The KODY workspace subagent owns orchestration and implementation routing" in starter
+    assert "/Users/qnb/dev/workouts/kody-workspace" in starter
+    assert "Run product implementation and child-local verification from the target child repo" in starter
+    assert "DB writes, imports, migrations, deploys" in starter
+    assert "ordinary \"진행\" is not enough" in starter
+    assert "Ask only for gaps that source data cannot answer" in starter
+    assert "verify concrete evidence" in starter
+
+
+def test_bestst_preset_enforces_subagent_boundary_and_f1_first(adapter):
+    name, starter = adapter._build_preset_thread("bestst")
+
+    assert name == "bestst"
+    assert "Kamill controller is Korean user-facing" in starter
+    assert "must not perform project implementation or mutate project files directly" in starter
+    assert "The BestST project subagent owns implementation" in starter
+    assert "/Users/qnb/dev/workouts/bestst" in starter
+    assert "Default to F1-first work" in starter
+    assert "F3/HWPX/Hancom/ZIP gates require explicit user direction or approval" in starter
+    assert "Prevent cross-project context bleed" in starter
+    assert "verify concrete evidence" in starter
+
+
+# ------------------------------------------------------------------
 # /thread slash command registration
 # ------------------------------------------------------------------
 
