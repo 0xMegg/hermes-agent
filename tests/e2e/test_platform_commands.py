@@ -15,7 +15,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-import gateway.run as gateway_run
 from gateway.config import Platform
 from gateway.platforms.base import SendResult
 from tests.e2e.conftest import make_event, send_and_capture
@@ -119,6 +118,8 @@ class TestSlashCommands:
     async def test_slash_restart_uses_launchd_service_restart_when_launchd_spawned(
         self, adapter, runner, platform, monkeypatch
     ):
+        import gateway.run as gateway_run
+
         monkeypatch.delenv("INVOCATION_ID", raising=False)
         monkeypatch.setenv("XPC_SERVICE_NAME", "ai.hermes.gateway")
         monkeypatch.setattr(gateway_run.os.path, "exists", lambda _path: False)
@@ -133,6 +134,8 @@ class TestSlashCommands:
     async def test_slash_restart_uses_detached_restart_without_service_manager(
         self, adapter, runner, platform, monkeypatch
     ):
+        import gateway.run as gateway_run
+
         monkeypatch.delenv("INVOCATION_ID", raising=False)
         monkeypatch.delenv("XPC_SERVICE_NAME", raising=False)
         monkeypatch.setattr(gateway_run.os.path, "exists", lambda _path: False)

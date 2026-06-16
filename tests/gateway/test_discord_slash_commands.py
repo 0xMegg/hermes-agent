@@ -75,6 +75,7 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
+from plugins.platforms.discord import adapter as discord_adapter_mod  # noqa: E402
 from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
 
 
@@ -661,7 +662,11 @@ async def test_auto_create_thread_returns_none_when_direct_and_fallback_fail(ada
 # ------------------------------------------------------------------
 
 
-import discord as _discord_mod  # noqa: E402 — mock or real, used below
+# Use the exact discord module object captured by the adapter under test.  Other
+# test modules may install their own lightweight discord mocks before this file
+# is imported; binding the fake channels to the adapter's module keeps
+# isinstance(channel, discord.Thread) checks stable across collection order.
+_discord_mod = discord_adapter_mod.discord
 
 
 class _FakeTextChannel:

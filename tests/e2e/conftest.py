@@ -70,10 +70,35 @@ def _ensure_discord_mock():
     discord_mod.MessageType = SimpleNamespace(default=0, reply=19)
     discord_mod.Object = lambda *, id: SimpleNamespace(id=id)
     discord_mod.Interaction = object
+    # Lightweight mock for app_commands.Group and Command used by slash
+    # registration tests when this e2e module is imported before the narrower
+    # Discord slash-command tests in the same pytest process.
+    class _FakeGroup:
+        def __init__(self, *, name, description, parent=None):
+            self.name = name
+            self.description = description
+            self.parent = parent
+            self._children: dict[str, object] = {}
+            if parent is not None:
+                parent.add_command(self)
+
+        def add_command(self, cmd):
+            self._children[cmd.name] = cmd
+
+    class _FakeCommand:
+        def __init__(self, *, name, description, callback, parent=None):
+            self.name = name
+            self.description = description
+            self.callback = callback
+            self.parent = parent
+
     discord_mod.app_commands = SimpleNamespace(
         describe=lambda **kwargs: (lambda fn: fn),
         choices=lambda **kwargs: (lambda fn: fn),
+        autocomplete=lambda **kwargs: (lambda fn: fn),
         Choice=lambda **kwargs: SimpleNamespace(**kwargs),
+        Group=_FakeGroup,
+        Command=_FakeCommand,
     )
     discord_mod.opus.is_loaded.return_value = True
 
