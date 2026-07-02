@@ -1157,6 +1157,7 @@ from gateway.platforms.base import (
     EphemeralReply,
     MessageEvent,
     MessageType,
+    TurnIntent,
     _reply_anchor_for_event,
     merge_pending_message_event,
 )
@@ -7321,6 +7322,9 @@ class GatewayRunner:
         7. Return response
         """
         source = event.source
+
+        if getattr(event, "turn_intent", TurnIntent.TRIGGER) == TurnIntent.DELIVER_ONLY:
+            return None
 
         # Internal events (e.g. background-process completion notifications)
         # are system-generated and must skip user authorization.
@@ -15791,6 +15795,7 @@ class GatewayRunner:
                 message_type=MessageType.TEXT,
                 source=source,
                 internal=True,
+                turn_intent=TurnIntent.DELIVER_ONLY,
                 message_id=str(evt.get("message_id") or "").strip() or None,
             )
             logger.info(
@@ -17031,7 +17036,7 @@ class GatewayRunner:
                 elif preview:
                     msg = f"{emoji} {tool_name}: \"{preview}\""
                 else:
-                    msg = f"{emoji} {tool_name}..."
+                    msg = f"{emoji} {tool_name}"
                 progress_queue.put(msg)
                 return
             
@@ -17046,7 +17051,7 @@ class GatewayRunner:
                     preview = preview[:_cap - 3] + "..."
                 msg = f"{emoji} {tool_name}: \"{preview}\""
             else:
-                msg = f"{emoji} {tool_name}..."
+                msg = f"{emoji} {tool_name}"
             
             # Dedup: collapse consecutive identical progress messages.
             # Common with execute_code where models iterate with the same

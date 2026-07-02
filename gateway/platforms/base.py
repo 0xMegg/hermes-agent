@@ -1379,6 +1379,13 @@ class MessageType(Enum):
     COMMAND = "command"  # /command style
 
 
+class TurnIntent(Enum):
+    """Whether an incoming event should trigger an agent turn or only deliver text."""
+
+    TRIGGER = "trigger"
+    DELIVER_ONLY = "deliver_only"
+
+
 class ProcessingOutcome(Enum):
     """Result classification for message-processing lifecycle hooks."""
 
@@ -1440,6 +1447,11 @@ class MessageEvent:
     # Internal flag — set for synthetic events (e.g. background process
     # completion notifications) that must bypass user authorization checks.
     internal: bool = False
+
+    # Turn intent is orthogonal to ``internal``. Most events trigger the normal
+    # agent pipeline; selected synthetic notices should be delivered to chat
+    # exactly once without becoming a new agent turn.
+    turn_intent: TurnIntent = TurnIntent.TRIGGER
 
     # Timestamps
     timestamp: datetime = field(default_factory=datetime.now)
@@ -1982,7 +1994,7 @@ class BasePlatformAdapter(ABC):
                 return f"{emoji} {event.tool_name}({list(event.args.keys())})\n{args_str}"
             if event.preview:
                 return f"{emoji} {event.tool_name}: \"{event.preview}\""
-            return f"{emoji} {event.tool_name}..."
+            return f"{emoji} {event.tool_name}"
 
         # "all" / "new": short preview, capped (default 40 to keep gateway
         # progress bubbles compact — they persist as permanent messages).
@@ -1992,7 +2004,7 @@ class BasePlatformAdapter(ABC):
             if len(preview) > cap:
                 preview = preview[:cap - 3] + "..."
             return f"{emoji} {event.tool_name}: \"{preview}\""
-        return f"{emoji} {event.tool_name}..."
+        return f"{emoji} {event.tool_name}"
 
     @property
     def has_fatal_error(self) -> bool:
@@ -3769,6 +3781,16 @@ class BasePlatformAdapter(ABC):
 
         await self._drain_pending_after_session_command(session_key, command_guard)
 
+    async def _deliver_notice(self, event: MessageEvent) -> SendResult:
+        """Deliver a notice event directly without invoking the message handler."""
+        metadata = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
+        return await self._send_with_retry(
+            chat_id=event.source.chat_id,
+            content=event.text,
+            reply_to=_reply_anchor_for_event(event),
+            metadata=metadata,
+        )
+
     async def handle_message(self, event: MessageEvent) -> None:
         """
         Process an incoming message.
@@ -3777,7 +3799,7 @@ class BasePlatformAdapter(ABC):
         This allows new messages to be processed even while an agent is running,
         enabling interruption support.
         """
-        if not self._message_handler:
+        if not self._message_handler and getattr(event, "turn_intent", TurnIntent.TRIGGER) != TurnIntent.DELIVER_ONLY:
             return
 
         coerce_plaintext_gateway_command(event)
@@ -3792,6 +3814,13 @@ class BasePlatformAdapter(ABC):
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
         )
+
+        if getattr(event, "turn_intent", TurnIntent.TRIGGER) == TurnIntent.DELIVER_ONLY:
+            await self._deliver_notice(event)
+            return
+
+        if not self._message_handler:
+            return
 
         # On-entry self-heal: if the adapter still has an _active_sessions
         # entry for this key but the owner task has already exited (done or
