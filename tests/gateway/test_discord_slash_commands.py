@@ -343,6 +343,27 @@ async def test_plugin_command_name_conflict_skipped(adapter):
 
 
 # ------------------------------------------------------------------
+# /project auto-archive default resolution
+# ------------------------------------------------------------------
+
+
+def test_project_auto_archive_default_is_24h_when_task_unspecified(adapter):
+    assert adapter._resolve_thread_auto_archive_duration(task="", requested=0) == 1440
+    assert adapter._resolve_thread_auto_archive_duration(task="custom-task", requested=0) == 1440
+
+
+def test_project_auto_archive_keeps_long_defaults_for_long_running_task_modes(adapter):
+    assert adapter._resolve_thread_auto_archive_duration(task="execute", requested=0) == 10080
+    assert adapter._resolve_thread_auto_archive_duration(task="ops", requested=0) == 10080
+    assert adapter._resolve_thread_auto_archive_duration(task="incident", requested=0) == 10080
+
+
+def test_project_auto_archive_explicit_request_overrides_task_default(adapter):
+    assert adapter._resolve_thread_auto_archive_duration(task="execute", requested=1440) == 1440
+    assert adapter._resolve_thread_auto_archive_duration(task="review", requested=60) == 60
+
+
+# ------------------------------------------------------------------
 # _handle_thread_create_slash — success, session dispatch, failure
 # ------------------------------------------------------------------
 

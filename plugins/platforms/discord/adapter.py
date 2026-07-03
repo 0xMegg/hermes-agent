@@ -3813,7 +3813,7 @@ Reply to me in Korean.""",
         if requested_int in VALID_THREAD_AUTO_ARCHIVE_MINUTES:
             return requested_int
         task_mode = (task or "").strip().lower()
-        return cls._THREAD_TASK_MODE_DEFAULT_ARCHIVE.get(task_mode, 10080)
+        return cls._THREAD_TASK_MODE_DEFAULT_ARCHIVE.get(task_mode, 1440)
 
     @classmethod
     def _format_preset_thread_name(cls, base_name: str, suffix: str = "") -> str:
