@@ -1646,27 +1646,31 @@ def _parse_session_key(session_key: str) -> "dict | None":
 
 
 def _format_gateway_process_notification(evt: dict) -> "str | None":
-    """Format a watch pattern event from completion_queue into a [IMPORTANT:] message."""
+    """Format a watch pattern event from completion_queue into a user-facing notice.
+
+    These notices are delivered verbatim to the chat (DELIVER_ONLY) and never
+    enter agent context, so they must read as status notices — not as the
+    ``[IMPORTANT: ...]`` agent-injection format, which is reserved for text
+    that becomes part of an agent turn (CLI drain, notify_on_complete).
+    """
     evt_type = evt.get("type", "completion")
     _sid = evt.get("session_id", "unknown")
     _cmd = evt.get("command", "unknown")
 
     if evt_type == "watch_disabled":
-        return f"[IMPORTANT: {evt.get('message', '')}]"
+        return f"🔕 {evt.get('message', '')}"
 
     if evt_type == "watch_match":
         _pat = evt.get("pattern", "?")
         _out = evt.get("output", "")
         _sup = evt.get("suppressed", 0)
         text = (
-            f"[IMPORTANT: Background process {_sid} matched "
-            f"watch pattern \"{_pat}\".\n"
-            f"Command: {_cmd}\n"
-            f"Matched output:\n{_out}"
+            f"🔔 Background process `{_sid}` matched \"{_pat}\"\n"
+            f"Command: `{_cmd}`\n"
+            f"{_out}"
         )
         if _sup:
             text += f"\n({_sup} earlier matches were suppressed by rate limit)"
-        text += "]"
         return text
 
     return None
@@ -15773,7 +15777,18 @@ class GatewayRunner:
 
         Routing must come from the queued watch event itself, not from whatever
         foreground message happened to be active when the queue was drained.
+
+        Watch events are mid-process chatter — the same class as the watcher's
+        "still running" updates — so they are only delivered in "all" mode.
         """
+        notify_mode = self._load_background_notifications_mode()
+        if notify_mode != "all":
+            logger.info(
+                "Suppressing watch notification for process %s (background_process_notifications=%s)",
+                evt.get("session_id", "unknown"),
+                notify_mode,
+            )
+            return
         source = self._build_process_event_source(evt)
         if not source:
             logger.warning(

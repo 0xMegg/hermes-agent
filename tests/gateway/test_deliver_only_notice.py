@@ -186,6 +186,7 @@ async def test_inject_watch_notification_constructs_deliver_only(monkeypatch, tm
     import gateway.run as gateway_run
 
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.delenv("HERMES_BACKGROUND_NOTIFICATIONS", raising=False)
     (tmp_path / "config.yaml").write_text("", encoding="utf-8")
 
     runner = GatewayRunner(GatewayConfig())
@@ -212,3 +213,63 @@ async def test_inject_watch_notification_constructs_deliver_only(monkeypatch, tm
     assert event.internal is True
     assert event.turn_intent == TurnIntent.DELIVER_ONLY
     assert event.source.chat_id == "c1"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["result", "error", "off"])
+async def test_inject_watch_notification_suppressed_unless_mode_all(monkeypatch, tmp_path, mode):
+    import gateway.run as gateway_run
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setenv("HERMES_BACKGROUND_NOTIFICATIONS", mode)
+    (tmp_path / "config.yaml").write_text("", encoding="utf-8")
+
+    runner = GatewayRunner(GatewayConfig())
+    adapter = MagicMock()
+    adapter.handle_message = AsyncMock()
+    runner.adapters[Platform.DISCORD] = adapter
+
+    await runner._inject_watch_notification(
+        "watch matched",
+        {
+            "session_id": "proc-1",
+            "platform": "discord",
+            "chat_type": "dm",
+            "chat_id": "c1",
+            "user_id": "u1",
+            "user_name": "alice",
+            "message_id": "m1",
+        },
+    )
+
+    adapter.handle_message.assert_not_awaited()
+
+
+def test_format_watch_notification_is_user_facing():
+    from gateway.run import _format_gateway_process_notification
+
+    text = _format_gateway_process_notification({
+        "type": "watch_match",
+        "session_id": "proc-1",
+        "command": "python server.py",
+        "pattern": "SERVER_READY",
+        "output": "SERVER_READY http://127.0.0.1:64800/",
+        "suppressed": 2,
+    })
+
+    assert text is not None
+    assert "[IMPORTANT" not in text
+    assert "SERVER_READY" in text
+    assert "proc-1" in text
+    assert "python server.py" in text
+    assert "http://127.0.0.1:64800/" in text
+    assert "2 earlier matches" in text
+
+    disabled = _format_gateway_process_notification({
+        "type": "watch_disabled",
+        "session_id": "proc-1",
+        "message": "watch disabled after repeated matches",
+    })
+    assert disabled is not None
+    assert "[IMPORTANT" not in disabled
+    assert "watch disabled after repeated matches" in disabled
